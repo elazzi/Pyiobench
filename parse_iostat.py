@@ -25,6 +25,164 @@ from datetime import datetime
 import pandas as pd
 import os # For os.path.abspath
 
+def _parse_timestamp(timestamp_str: str) -> datetime | None:
+    """
+    Attempts to parse a timestamp string into a datetime object.
+
+    It tries a list of common timestamp formats found in iostat outputs.
+    If parsing fails for all known formats, a warning is printed, and None is returned.
+
+    Args:
+        timestamp_str: The timestamp string to parse (e.g., "03/22/2024 10:00:00 AM").
+
+    Returns:
+        A datetime object if parsing is successful, otherwise None.
+    """
+    # A list of datetime format strings to try for parsing the timestamp.
+    # This list covers various common formats from different iostat versions and locales.
+    formats_to_try = [
+        "%m/%d/%Y %I:%M:%S %p",  # e.g., "03/22/2024 10:00:00 AM" (Locale dependent AM/PM)
+        "%m/%d/%y %I:%M:%S %p",  # e.g., "03/22/24 10:00:00 AM" (Locale dependent AM/PM)
+        "%m/%d/%Y %H:%M:%S",     # e.g., 03/22/2024 10:00:00 (24-hour)
+        "%m/%d/%y %H:%M:%S",     # e.g., 03/22/24 10:00:00 (24-hour)
+        "%Y-%m-%d %H:%M:%S",     # ISO-like e.g. 2024-03-22 10:00:00
+        "%Y-%m-%dT%H:%M:%S",    # ISO 8601 e.g. 2024-03-22T10:00:00 
+        "%d/%m/%Y %H:%M:%S",     # e.g., 22/03/2024 10:00:00
+        "%d/%m/%y %H:%M:%S",     # e.g., 22/03/24 10:00:00
+        "%d.%m.%Y %H:%M:%S",     # e.g., 22.03.2024 10:00:00
+        "%d.%m.%y %H:%M:%S",     # e.g., 22.03.24 10:00:00
+        "%b %d %Y %I:%M:%S %p",  # e.g., Mar 22 2024 10:00:00 AM (GNU iostat with LC_TIME=C)
+        "%b %d %Y %H:%M:%S",    # e.g., Mar 22 2024 10:00:00 (GNU iostat with LC_TIME=C, 24hr)
+        "%x %X",                 # Locale’s appropriate date and time representation - good as a fallback
+    ]
+    for fmt in formats_to_try:
+        try:
+            return datetime.strptime(timestamp_str, fmt)
+        except ValueError:
+            continue
+    print(f"Warning: Could not parse timestamp: '{timestamp_str}'. Tried formats: {formats_to_try}")
+    return None
+
+def _parse_block(timestamp_str: str, block_content: str) -> list[dict]:
+    """
+    Parses a single block of iostat output associated with a specific timestamp.
+
+    A block typically contains CPU statistics (avg-cpu) followed by device statistics.
+    This function identifies the header line for device data, then parses each
+    subsequent line as metrics for a specific device.
+
+    Args:
+        timestamp_str: The timestamp string for this block (used for warning messages).
+        block_content: A string containing all lines of the iostat output for this block.
+
+    Returns:
+        A list of dictionaries, where each dictionary contains the metrics for one
+        device from this block. Returns an empty list if the block is unparseable
+        or contains no device data.
+    """
+    parsed_timestamp = _parse_timestamp(timestamp_str)
+    if not parsed_timestamp:
+        # If the timestamp string itself couldn't be parsed by _parse_timestamp,
+        # log it and skip this block as we can't associate data reliably.
+        print(f"Warning: Skipping block due to unparseable timestamp: '{timestamp_str}'")
+        return []
+
+    lines = block_content.strip().split('\n')
+    device_data_list = []
+    headers = []
+    
+    device_section_started = False
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        if line.startswith("Device:") or line.startswith("Device "): # Handle "Device:" or "Device  r/s ..."
+            # Found header line
+            headers = re.split(r'\s+', line) # Split by any whitespace
+            # Some iostat versions might have "Device:" as the first token, others just "Device"
+            if headers[0] == "Device:" or headers[0] == "Device":
+                 # Normalize column names, remove problematic characters if any for dict keys
+                headers = [h.replace('%', 'pct_') for h in headers] # pct_util instead of %util
+            else: #This was not a valid header line
+                headers = [] # Reset headers if it's not a proper device line
+                continue
+            device_section_started = True
+            continue
+        
+        if not device_section_started:
+            # Lines before the "Device:" header are typically avg-cpu stats,
+            # Linux version information, or empty lines. These should be skipped.
+            if "avg-cpu" in line.lower() or \
+               "linux version" in line.lower().strip() or \
+               line.strip().startswith("Time:"): # Some iostat versions might include "Time: HH:MM:SS" lines
+                continue
+            if not line.strip(): # Skip any other blank lines
+                continue
+            # For debugging, uncomment below to see what other lines are being skipped:
+            # print(f"Debug: Skipping pre-header line: '{line}'")
+            continue
+
+        # We are now in the section where device data is expected.
+        if not headers: 
+            # This state should ideally not be reached if "Device:" line was present and parsed.
+            # If it is, it means we encountered a line that looks like data but had no preceding header.
+            # Warn if the line seems to contain data (has digits).
+            if line.strip() and any(char.isdigit() for char in line):
+                 print(f"Warning: Skipping data line due to missing headers (was 'Device:' line found and parsed for this block?): '{line}'")
+            continue
+
+        # Split the data line into values based on whitespace.
+        values = re.split(r'\s+', line)
+        if len(values) != len(headers):
+            # If the number of values doesn't match the number of headers,
+            # this line is likely malformed or not a standard device data line.
+            # Print a warning if it looks like it was intended to be data.
+            if len(values) > 1 and any(v.replace('.', '', 1).replace(',', '', 1).isdigit() for v in values[1:]):
+                 print(f"Warning: Skipping malformed data line (column count mismatch: {len(values)} fields, expected {len(headers)}). Line: '{line}'")
+            continue # Skip this malformed line
+
+
+        device_name = values[0]
+        # Defensive check: ensure device name is not something like "avg-cpu:" or "Device:"
+        # which might happen if parsing logic is imperfect or iostat output is unusual.
+        if device_name in ["avg-cpu:", "Device:"]:
+             continue
+
+        # Prepare a dictionary to store metrics for the current device and timestamp.
+        device_metrics = {'timestamp': parsed_timestamp, 'Device': device_name}
+        valid_metric_found = False # Flag to ensure we add this dict only if it has valid metrics
+
+        # Iterate through the headers (skipping the first 'Device' header)
+        # and extract corresponding values.
+        for i, header_name in enumerate(headers[1:]): # headers[0] is 'Device'
+            metric_key = header_name # This is already normalized (e.g. pct_util from '%util')
+            try:
+                metric_value_str = values[i+1] # Corresponding value based on header index
+                # Convert metric value to float. Handle comma as decimal separator if present.
+                metric_value = float(metric_value_str.replace(',', '.'))
+                device_metrics[metric_key] = metric_value
+                valid_metric_found = True
+            except ValueError:
+                # If conversion to float fails, log a warning and use 0.0 as a default.
+                print(f"Warning: Could not convert value '{metric_value_str}' to float for metric '{metric_key}' on device '{device_name}'. Using 0.0 instead. Line: '{line}'")
+                device_metrics[metric_key] = 0.0
+            except IndexError:
+                # If a value is missing for a header, log a warning and use 0.0.
+                print(f"Warning: Missing value for metric '{metric_key}' on device '{device_name}'. Using 0.0 instead. Line: '{line}'")
+                device_metrics[metric_key] = 0.0
+        
+        # Add the parsed metrics for this device to the list if valid metrics were found
+        # and the device name is not "avg-cpu" (a final safeguard).
+        if valid_metric_found and device_name: 
+            if "avg-cpu" not in device_name and device_name.strip(): # Ensure device_name is not empty
+                 device_data_list.append(device_metrics)
+            elif "avg-cpu" in device_name:
+                # This case should ideally be caught earlier, but acts as a silent safeguard.
+                pass 
+    
+    return device_data_list
+
 def parse_iostat_file(file_path: str) -> pd.DataFrame:
     """
     Parses the iostat output file, extracts device statistics for each timestamp,
@@ -232,164 +390,6 @@ def main():
         # import traceback
         # traceback.print_exc()
 
-def _parse_timestamp(timestamp_str: str) -> datetime | None:
-    """
-    Attempts to parse a timestamp string into a datetime object.
-
-    It tries a list of common timestamp formats found in iostat outputs.
-    If parsing fails for all known formats, a warning is printed, and None is returned.
-
-    Args:
-        timestamp_str: The timestamp string to parse (e.g., "03/22/2024 10:00:00 AM").
-
-    Returns:
-        A datetime object if parsing is successful, otherwise None.
-    """
-    # A list of datetime format strings to try for parsing the timestamp.
-    # This list covers various common formats from different iostat versions and locales.
-    formats_to_try = [
-        "%m/%d/%Y %I:%M:%S %p",  # e.g., "03/22/2024 10:00:00 AM" (Locale dependent AM/PM)
-        "%m/%d/%y %I:%M:%S %p",  # e.g., "03/22/24 10:00:00 AM" (Locale dependent AM/PM)
-        "%m/%d/%Y %H:%M:%S",     # e.g., 03/22/2024 10:00:00 (24-hour)
-        "%m/%d/%y %H:%M:%S",     # e.g., 03/22/24 10:00:00 (24-hour)
-        "%Y-%m-%d %H:%M:%S",     # ISO-like e.g. 2024-03-22 10:00:00
-        "%Y-%m-%dT%H:%M:%S",    # ISO 8601 e.g. 2024-03-22T10:00:00 
-        "%d/%m/%Y %H:%M:%S",     # e.g., 22/03/2024 10:00:00
-        "%d/%m/%y %H:%M:%S",     # e.g., 22/03/24 10:00:00
-        "%d.%m.%Y %H:%M:%S",     # e.g., 22.03.2024 10:00:00
-        "%d.%m.%y %H:%M:%S",     # e.g., 22.03.24 10:00:00
-        "%b %d %Y %I:%M:%S %p",  # e.g., Mar 22 2024 10:00:00 AM (GNU iostat with LC_TIME=C)
-        "%b %d %Y %H:%M:%S",    # e.g., Mar 22 2024 10:00:00 (GNU iostat with LC_TIME=C, 24hr)
-        "%x %X",                 # Locale’s appropriate date and time representation - good as a fallback
-    ]
-    for fmt in formats_to_try:
-        try:
-            return datetime.strptime(timestamp_str, fmt)
-        except ValueError:
-            continue
-    print(f"Warning: Could not parse timestamp: '{timestamp_str}'. Tried formats: {formats_to_try}")
-    return None
-
 # Standard Python idiom to execute main() when the script is run directly
 if __name__ == "__main__":
     main()
-
-def _parse_block(timestamp_str: str, block_content: str) -> list[dict]:
-    """
-    Parses a single block of iostat output associated with a specific timestamp.
-
-    A block typically contains CPU statistics (avg-cpu) followed by device statistics.
-    This function identifies the header line for device data, then parses each
-    subsequent line as metrics for a specific device.
-
-    Args:
-        timestamp_str: The timestamp string for this block (used for warning messages).
-        block_content: A string containing all lines of the iostat output for this block.
-
-    Returns:
-        A list of dictionaries, where each dictionary contains the metrics for one
-        device from this block. Returns an empty list if the block is unparseable
-        or contains no device data.
-    """
-    parsed_timestamp = _parse_timestamp(timestamp_str)
-    if not parsed_timestamp:
-        # If the timestamp string itself couldn't be parsed by _parse_timestamp,
-        # log it and skip this block as we can't associate data reliably.
-        print(f"Warning: Skipping block due to unparseable timestamp: '{timestamp_str}'")
-        return []
-
-    lines = block_content.strip().split('\n')
-    device_data_list = []
-    headers = []
-    
-    device_section_started = False
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-
-        if line.startswith("Device:") or line.startswith("Device "): # Handle "Device:" or "Device  r/s ..."
-            # Found header line
-            headers = re.split(r'\s+', line) # Split by any whitespace
-            # Some iostat versions might have "Device:" as the first token, others just "Device"
-            if headers[0] == "Device:" or headers[0] == "Device":
-                 # Normalize column names, remove problematic characters if any for dict keys
-                headers = [h.replace('%', 'pct_') for h in headers] # pct_util instead of %util
-            else: #This was not a valid header line
-                headers = [] # Reset headers if it's not a proper device line
-                continue
-            device_section_started = True
-            continue
-        
-        if not device_section_started:
-            # Lines before the "Device:" header are typically avg-cpu stats,
-            # Linux version information, or empty lines. These should be skipped.
-            if "avg-cpu" in line.lower() or \
-               "linux version" in line.lower().strip() or \
-               line.strip().startswith("Time:"): # Some iostat versions might include "Time: HH:MM:SS" lines
-                continue
-            if not line.strip(): # Skip any other blank lines
-                continue
-            # For debugging, uncomment below to see what other lines are being skipped:
-            # print(f"Debug: Skipping pre-header line: '{line}'")
-            continue
-
-        # We are now in the section where device data is expected.
-        if not headers: 
-            # This state should ideally not be reached if "Device:" line was present and parsed.
-            # If it is, it means we encountered a line that looks like data but had no preceding header.
-            # Warn if the line seems to contain data (has digits).
-            if line.strip() and any(char.isdigit() for char in line):
-                 print(f"Warning: Skipping data line due to missing headers (was 'Device:' line found and parsed for this block?): '{line}'")
-            continue
-
-        # Split the data line into values based on whitespace.
-        values = re.split(r'\s+', line)
-        if len(values) != len(headers):
-            # If the number of values doesn't match the number of headers,
-            # this line is likely malformed or not a standard device data line.
-            # Print a warning if it looks like it was intended to be data.
-            if len(values) > 1 and any(v.replace('.', '', 1).replace(',', '', 1).isdigit() for v in values[1:]):
-                 print(f"Warning: Skipping malformed data line (column count mismatch: {len(values)} fields, expected {len(headers)}). Line: '{line}'")
-            continue # Skip this malformed line
-
-
-        device_name = values[0]
-        # Defensive check: ensure device name is not something like "avg-cpu:" or "Device:"
-        # which might happen if parsing logic is imperfect or iostat output is unusual.
-        if device_name in ["avg-cpu:", "Device:"]:
-             continue
-
-        # Prepare a dictionary to store metrics for the current device and timestamp.
-        device_metrics = {'timestamp': parsed_timestamp, 'Device': device_name}
-        valid_metric_found = False # Flag to ensure we add this dict only if it has valid metrics
-
-        # Iterate through the headers (skipping the first 'Device' header)
-        # and extract corresponding values.
-        for i, header_name in enumerate(headers[1:]): # headers[0] is 'Device'
-            metric_key = header_name # This is already normalized (e.g. pct_util from '%util')
-            try:
-                metric_value_str = values[i+1] # Corresponding value based on header index
-                # Convert metric value to float. Handle comma as decimal separator if present.
-                metric_value = float(metric_value_str.replace(',', '.'))
-                device_metrics[metric_key] = metric_value
-                valid_metric_found = True
-            except ValueError:
-                # If conversion to float fails, log a warning and use 0.0 as a default.
-                print(f"Warning: Could not convert value '{metric_value_str}' to float for metric '{metric_key}' on device '{device_name}'. Using 0.0 instead. Line: '{line}'")
-                device_metrics[metric_key] = 0.0
-            except IndexError:
-                # If a value is missing for a header, log a warning and use 0.0.
-                print(f"Warning: Missing value for metric '{metric_key}' on device '{device_name}'. Using 0.0 instead. Line: '{line}'")
-                device_metrics[metric_key] = 0.0
-        
-        # Add the parsed metrics for this device to the list if valid metrics were found
-        # and the device name is not "avg-cpu" (a final safeguard).
-        if valid_metric_found and device_name: 
-            if "avg-cpu" not in device_name and device_name.strip(): # Ensure device_name is not empty
-                 device_data_list.append(device_metrics)
-            elif "avg-cpu" in device_name:
-                # This case should ideally be caught earlier, but acts as a silent safeguard.
-                pass 
-    
-    return device_data_list
