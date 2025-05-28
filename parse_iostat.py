@@ -8,10 +8,13 @@ It extracts metrics like r/s, w/s, %util, etc., for each storage device.
 Graphs are saved as PNG files in a specified output directory.
 
 Basic Command-Line Usage:
-    python parse_iostat.py <input_file_path> [-o <output_directory>]
+    python parse_iostat.py [input_file_path] [-o <output_directory>]
+
+If `input_file_path` is omitted, it defaults to `iostat_output.log` in the current directory.
 
 Example:
-    python parse_iostat.py ./iostat_log.txt -o ./iostat_graphs
+    python parse_iostat.py ./my_iostat_log.txt -o ./iostat_graphs
+    python parse_iostat.py -o ./graphs  # Processes default 'iostat_output.log'
 """
 
 import re
@@ -188,12 +191,17 @@ def main():
         formatter_class=argparse.RawTextHelpFormatter # To allow for newlines in help text
     )
     parser.add_argument(
-        "input_file", 
-        help="Path to the iostat output file."
+        "input_file",
+        nargs='?',  # Makes it optional
+        default='iostat_output.log',  # Default value
+        type=str,
+        help="Path to the iostat output file. Defaults to 'iostat_output.log' if not provided."
     )
-    parser.add_argument("-o", "--output_dir", 
-                        default=".", 
-                        help="Directory to save the generated graph image files. Defaults to the current directory.")
+    parser.add_argument(
+        "-o", "--output_dir", 
+        default=".", 
+        help="Directory to save the generated graph image files. Defaults to the current directory."
+    )
     
     args = parser.parse_args()
 
