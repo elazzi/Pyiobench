@@ -183,62 +183,6 @@ Examples:
     # Add more arguments as needed, e.g., for specific tests, block sizes
     return parser.parse_args()
 
-def print_results(fs_info, all_seq_results, all_rand_results,最佳_seq_block_size,最佳_rand_block_size, args):
-    """
-    Prints benchmarking results in a formatted way.
-    """
-    print("\n--- Benchmark Summary ---")
-    print(f"Test Directory: {os.path.abspath(args.directory)}")
-    print(f"Test File Size: {args.size}")
-    print(f"Test Duration per run: {args.duration}s")
-    print(f"Filesystem Type: {fs_info.get('type', 'N/A')}")
-    print(f"Native Filesystem Block Size: {fs_info.get('block_size', 'N/A')} bytes") # Changed for clarity
-
-    print("\n--- Detailed Results per Block Size ---") # Moved this section up for better flow if detailed is default
-
-    print("\nSequential Write Tests (detailed):")
-    if all_seq_results:
-        for bs, result in sorted(all_seq_results.items()):
-            bs_kb = bs // 1024
-            if "error" in result:
-                print(f"  Block Size: {bs_kb}K ({bs} bytes) - Error: {result['error']}")
-            else:
-                print(f"  Block Size: {bs_kb}K ({bs} bytes): Speed: {result.get('speed_mbps', 0):.2f} MB/s, IOPS: {result.get('iops', 0):.2f}")
-    else:
-        print("  No results for sequential write test (an error may have occurred or no tests run).")
-
-    print("\nRandom Write Tests (detailed):")
-    if all_rand_results:
-        for bs, result in sorted(all_rand_results.items()):
-            bs_kb = bs // 1024
-            if "error" in result:
-                 print(f"  Block Size: {bs_kb}K ({bs} bytes) - Error: {result['error']}")
-            elif result.get('bytes_written',0)==0 and 'error' not in result : # Skipped or no data
-                 print(f"  Block Size: {bs_kb}K ({bs} bytes) - Skipped or no data written.")
-            else:
-                print(f"  Block Size: {bs_kb}K ({bs} bytes): Speed: {result.get('speed_mbps', 0):.2f} MB/s, IOPS: {result.get('iops', 0):.2f}")
-    else:
-        print("  No results for random write test (an error may have occurred or no tests run).")
-
-    print("\n--- Best Performers ---") # Moved best performers summary after detailed
-    if best_seq_result and 'block_size' in best_seq_result:
-        bs_kb = best_seq_result['block_size'] // 1024
-        print(f"Best Sequential Write Performance with Block Size: {bs_kb}K ({best_seq_result['block_size']} bytes)")
-        print(f"  Speed: {best_seq_result.get('speed_mbps',0):.2f} MB/s, IOPS: {best_seq_result.get('iops',0):.2f}")
-        print(f"  Total Data Written: {best_seq_result.get('bytes_written',0) / (1024**2):.2f} MB in {best_seq_result.get('time_taken',0):.2f}s")
-    else:
-        print("Sequential write tests did not yield a best performer (or all failed).")
-
-    if best_rand_result and 'block_size' in best_rand_result:
-        bs_kb = best_rand_result['block_size'] // 1024
-        print(f"Best Random Write Performance with Block Size: {bs_kb}K ({best_rand_result['block_size']} bytes)")
-        print(f"  Speed: {best_rand_result.get('speed_mbps',0):.2f} MB/s, IOPS: {best_rand_result.get('iops',0):.2f}")
-        print(f"  Total Data Written: {best_rand_result.get('bytes_written',0) / (1024**2):.2f} MB in {best_rand_result.get('time_taken',0):.2f}s")
-    else:
-        print("Random write tests did not yield a best performer (or all failed).")
-
-    print("--- End of Summary ---")
-
 def print_results(fs_info, all_seq_results, all_rand_results, best_seq_result, best_rand_result, args): # Renamed parameters
     """
     Prints benchmarking results in a formatted way.
