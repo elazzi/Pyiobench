@@ -4,11 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>iostat Metrics Report</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/date-fns/2.30.0/date_fns.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/chartjs-adapter-date-fns/3.0.0/chartjs-adapter-date-fns.bundle.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/hammer.js/2.0.8/hammer.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/chartjs-plugin-zoom/2.0.1/chartjs-plugin-zoom.min.js"></script>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
     <style>
         body { font-family: Arial, sans-serif; margin: 20px; background-color: #f4f4f4; color: #333; }
         h1 { text-align: center; color: #2c3e50; }
@@ -23,7 +19,7 @@
             border-radius: 4px;
             background: #f9f9f9;
             min-width: 300px;
-            max-height: 300px; /* Increased max-height for better scroll */
+            max-height: 300px;
             overflow-y: auto;
         }
         .device-metric-group { margin-bottom: 10px; border-bottom: 1px solid #eee; padding-bottom: 10px; }
@@ -44,13 +40,37 @@
             padding: 15px;
             border-radius: 8px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            /* text-align: center; */ /* No longer needed if title is part of chart options */
-            height: 350px; /* Or use aspect-ratio if preferred and widely supported */
-            position: relative; /* For canvas responsiveness */
+            height: 380px; /* Increased height for D3 chart with title and axes */
+            position: relative;
+            display: flex;
+            flex-direction: column;
         }
-        .graph-container canvas { /* Canvas itself does not need much styling here */ }
-        .graph-container p.chart-title { /* Style for title, if added manually above canvas */
+        .chart-title { /* Class for the <p> title element */
             font-size: 1em; color: #555; margin-bottom: 10px; font-weight: bold; text-align: center;
+            flex-shrink: 0; /* Prevent title from shrinking */
+        }
+        .d3-svg-container { /* Div that will contain the SVG */
+            flex-grow: 1; /* SVG container takes remaining space */
+            position: relative; /* For SVG positioning if needed */
+        }
+        /* D3 specific styles */
+        .line { fill: none; stroke: steelblue; stroke-width: 1.5px; }
+        .axis path, .axis line { fill: none; stroke: #ccc; shape-rendering: crispEdges; } /* Lighter axis lines */
+        .axis text { font-family: sans-serif; font-size: 10px; fill: #555 } /* Axis text color */
+        .axis-label { font-size: 12px; fill: #333; text-anchor: middle; }
+        /* Tooltip style (optional, if you add tooltips) */
+        .tooltip {
+            position: absolute;
+            text-align: center;
+            padding: 6px;
+            font: 12px sans-serif;
+            background: rgba(50,50,50,0.8);
+            color: white;
+            border: 0px;
+            border-radius: 4px;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.2s;
         }
     </style>
 </head>
@@ -65,13 +85,12 @@
     </div>
 
     <div id="graphDisplayArea">
-        <!-- Graphs will be displayed here -->
+        <!-- D3 charts will be appended here -->
     </div>
 
     <script>
         const graphData = JSON.parse('__GRAPH_DATA_JSON__');
-        console.log('Chart.adapters:', Chart.adapters); // Added for debugging
-        const activeCharts = {}; // Object to store active chart instances
+        // const activeCharts = {}; // D3 typically doesn't require storing instances like Chart.js for simple redraw/removal
 
         const metricCheckboxesContainer = document.getElementById('metricCheckboxes');
         const graphDisplayArea = document.getElementById('graphDisplayArea');
@@ -111,12 +130,12 @@
                         checkbox.dataset.device = device;
                         checkbox.dataset.metric = metric;
 
-                        checkbox.addEventListener('change', handleCheckboxChange);
+                        checkbox.addEventListener('change', handleD3CheckboxChange);
 
                         label.appendChild(checkbox);
 
                         let labelText = metric;
-                        const metricInfo = graphData[device][metric]; // Contains title, max_value, series_data
+                        const metricInfo = graphData[device][metric];
                         if (metricInfo && typeof metricInfo.max_value !== 'undefined') {
                             let maxText = '(Max: N/A)';
                             if (metricInfo.max_value !== null) {
@@ -137,12 +156,11 @@
             });
         }
 
-        function handleCheckboxChange(event) {
+        function handleD3CheckboxChange(event) {
             const checkbox = event.target;
             const device = checkbox.dataset.device;
             const metric = checkbox.dataset.metric;
-            const graphContainerId = `graph-container-${device}-${metric}`;
-            const canvasId = `chart-canvas-${device}-${metric}`;
+            const graphContainerId = `d3-graph-container-${device}-${metric}`;
 
             if (checkbox.checked) {
                 if (!document.getElementById(graphContainerId) && graphData[device] && graphData[device][metric]) {
@@ -152,75 +170,19 @@
                     graphContainer.className = 'graph-container';
                     graphContainer.id = graphContainerId;
 
-                    // Optional: Add title <p> element if Chart.js title is not sufficient or for consistency
-                    // const titleElement = document.createElement('p');
-                    // titleElement.className = 'chart-title';
-                    // titleElement.textContent = item.title;
-                    // graphContainer.appendChild(titleElement);
+                    const titleElement = document.createElement('p');
+                    titleElement.className = 'chart-title';
+                    titleElement.textContent = item.title;
+                    graphContainer.appendChild(titleElement);
 
-                    const canvas = document.createElement('canvas');
-                    canvas.id = canvasId;
-                    graphContainer.appendChild(canvas);
+                    const svgContainer = document.createElement('div'); // This div will directly contain the SVG
+                    svgContainer.className = 'd3-svg-container';
+                    graphContainer.appendChild(svgContainer);
 
                     graphDisplayArea.appendChild(graphContainer);
-
-                    const ctx = canvas.getContext('2d');
-                    const chart = new Chart(ctx, {
-                        type: 'line',
-                        data: {
-                            labels: item.series_data.timestamps,
-                            datasets: [{
-                                label: metric, // Metric name for dataset label
-                                data: item.series_data.values,
-                                borderColor: 'rgb(75, 192, 192)',
-                                tension: 0.1,
-                                fill: false
-                            }]
-                        },
-                        options: {
-                            responsive: true,
-                            maintainAspectRatio: false,
-                            scales: {
-                                x: {
-                                    type: 'time', // Requires Chart.js time adapter if not built-in for ISO
-                                    time: { // Optional: configuration for time scale if adapter is used
-                                        // unit: 'minute', // Example: display ticks per minute
-                                        // tooltipFormat: 'yyyy-MM-dd HH:mm:ss'
-                                    },
-                                    title: { display: true, text: 'Timestamp' }
-                                },
-                                y: {
-                                    title: { display: true, text: metric }
-                                }
-                            },
-                            plugins: {
-                                title: {
-                                    display: true,
-                                    text: item.title // Full descriptive title for the chart
-                                },
-                                zoom: {
-                                    pan: {
-                                        enabled: true,
-                                        mode: 'xy',
-                                        threshold: 5, // Minimum pan distance to trigger
-                                    },
-                                    zoom: {
-                                        wheel: { enabled: true },
-                                        pinch: { enabled: true },
-                                        mode: 'xy'
-                                    }
-                                }
-                            }
-                        }
-                    });
-                    activeCharts[graphContainerId] = chart;
+                    drawD3Chart(svgContainer, item.series_data, item.title, item.max_value, metric);
                 }
             } else {
-                // Destroy chart and remove container
-                if (activeCharts[graphContainerId]) {
-                    activeCharts[graphContainerId].destroy();
-                    delete activeCharts[graphContainerId];
-                }
                 const graphElement = document.getElementById(graphContainerId);
                 if (graphElement) {
                     graphDisplayArea.removeChild(graphElement);
@@ -228,7 +190,109 @@
             }
         }
 
-        // Initial population
+        function drawD3Chart(containerElement, seriesData, chartTitleText, metricMaxValue, metricName) {
+            const data = seriesData.timestamps.map((ts, i) => ({
+                date: d3.isoParse(ts), // Use d3.isoParse for ISO strings
+                value: seriesData.values[i]
+            })).filter(d => d.value !== null && d.date !== null); // Filter out null dates or values
+
+            if (data.length === 0) {
+                containerElement.innerHTML = '<p>No valid data to display for this metric.</p>';
+                return;
+            }
+
+            const margin = {top: 10, right: 30, bottom: 40, left: 50}; // Adjusted margins
+
+            // Get dimensions from the .d3-svg-container which is set to flex-grow
+            const parentRect = containerElement.getBoundingClientRect();
+            const width = parentRect.width - margin.left - margin.right;
+            const height = parentRect.height - margin.top - margin.bottom;
+
+            if (width <=0 || height <=0) { // If container has no size yet, don't draw
+                containerElement.innerHTML = '<p>Cannot draw chart: container has no dimensions.</p>';
+                return;
+            }
+
+            const svg = d3.select(containerElement).append("svg")
+                .attr("width", width + margin.left + margin.right)
+                .attr("height", height + margin.top + margin.bottom)
+              .append("g")
+                .attr("transform", `translate(${margin.left},${margin.top})`);
+
+            const xScale = d3.scaleTime()
+                .domain(d3.extent(data, d => d.date))
+                .range([0, width]);
+
+            const effectiveMaxValue = d3.max(data, d => d.value);
+            const yDomainMax = Math.max(effectiveMaxValue, metricMaxValue, (metricMaxValue === null && effectiveMaxValue === 0 ? 10 : 0)); // Ensure y-axis isn't flat if all 0
+
+            const yScale = d3.scaleLinear()
+                .domain([0, yDomainMax]).nice() // Use .nice() for better axis ticks
+                .range([height, 0]);
+
+            const xAxis = d3.axisBottom(xScale).ticks(Math.max(Math.floor(width / 80), 2)).tickFormat(d3.timeFormat("%H:%M:%S"));
+            const yAxis = d3.axisLeft(yScale).ticks(Math.max(Math.floor(height/30), 2));
+
+            svg.append("g")
+                .attr("class", "axis x-axis")
+                .attr("transform", `translate(0,${height})`)
+                .call(xAxis)
+                .selectAll("text")
+                .style("text-anchor", "end")
+                .attr("dx", "-.8em")
+                .attr("dy", ".15em")
+                .attr("transform", "rotate(-35)");
+
+            svg.append("g")
+                .attr("class", "axis y-axis")
+                .call(yAxis);
+
+            // Y-axis label
+            svg.append("text")
+                .attr("class", "axis-label")
+                .attr("transform", "rotate(-90)")
+                .attr("y", 0 - margin.left + 15) // Adjust position
+                .attr("x", 0 - (height / 2))
+                .attr("dy", "1em") // Keep it away from axis line
+                .style("text-anchor", "middle")
+                .text(metricName);
+
+
+            const line = d3.line()
+                .defined(d => d.value !== null) // Handles gaps for null data
+                .x(d => xScale(d.date))
+                .y(d => yScale(d.value));
+
+            svg.append("path")
+                .datum(data)
+                .attr("class", "line")
+                .attr("d", line);
+
+            // Zoom functionality
+            const zoom = d3.zoom()
+                .scaleExtent([1, 20]) // Min 1x, Max 20x zoom
+                .translateExtent([[0, 0], [width, height]]) // Pan within original chart bounds
+                .extent([[0, 0], [width, height]])
+                .on("zoom", (event) => {
+                    const newXScale = event.transform.rescaleX(xScale);
+                    const newYScale = event.transform.rescaleY(yScale);
+
+                    svg.select(".x-axis").call(d3.axisBottom(newXScale).ticks(Math.max(Math.floor(width / 80), 2)).tickFormat(d3.timeFormat("%H:%M:%S")))
+                       .selectAll("text").style("text-anchor", "end").attr("dx", "-.8em").attr("dy", ".15em").attr("transform", "rotate(-35)");
+                    svg.select(".y-axis").call(d3.axisLeft(newYScale).ticks(Math.max(Math.floor(height/30), 2)));
+
+                    svg.select(".line").attr("d", line.x(d => newXScale(d.date)).y(d => newYScale(d.value)));
+                });
+
+            // Append a rect for capturing zoom events, ensuring it's behind the lines/axes
+            svg.append("rect")
+                .attr("width", width)
+                .attr("height", height)
+                .style("fill", "none")
+                .style("pointer-events", "all")
+                .call(zoom);
+        }
+
         initializeMetricSelectors();
     </script>
 </body>

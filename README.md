@@ -2,7 +2,7 @@
 
 ## Script Overview
 
-`parse_iostat.py` is a Python script designed to parse the output of the `iostat` command (specifically, output similar to that from `iostat -xtc <interval>`). It processes this data and generates a highly interactive HTML report. This report allows users to dynamically select and view time-series charts for various performance metrics from multiple storage devices simultaneously, aiding in the analysis of disk I/O behavior.
+`parse_iostat.py` is a Python script designed to parse the output of the `iostat` command (specifically, output similar to that from `iostat -xtc <interval>`). It processes this data and generates a highly interactive HTML report. This report allows users to dynamically select and view time-series charts, rendered using D3.js, for various performance metrics from multiple storage devices simultaneously, aiding in the analysis of disk I/O behavior.
 
 ## Dependencies
 
@@ -14,7 +14,7 @@ You can install this dependency using pip:
 ```bash
 pip install pandas
 ```
-The HTML report uses the Chart.js library (and its zoom plugin) which are loaded via CDN links within the HTML file, so no separate installation for Chart.js is needed to run the Python script.
+The HTML report uses the D3.js library, which is loaded via a CDN link within the HTML file. No separate installation for D3.js is needed to run the Python script.
 
 ## Input File Format
 
@@ -63,7 +63,7 @@ python parse_iostat.py [input_file] [options]
 
 The script produces the following output within the specified output directory (or current directory if none is provided):
 
-*   **HTML Report (`iostat_report.html`)**: A dynamic and interactive HTML file that renders time-series charts using Chart.js. This single file contains all the data and logic to browse and visualize the iostat metrics. See the "Using the HTML Report" section below for details on its features.
+*   **HTML Report (`iostat_report.html`)**: A dynamic and interactive HTML file that renders time-series charts using D3.js. This single file contains all the data and logic to browse and visualize the iostat metrics. See the "Using the HTML Report" section below for details on its features.
 
 The script also prints informational messages to the console during its execution, including parsing progress, chart data preparation status, HTML report creation, and any warnings or errors encountered.
 
@@ -79,9 +79,8 @@ The report interface presents a list of all detected devices. Under each device 
 *   **Multi-Device and Multi-Metric Viewing**:
     *   You can select and view metrics from multiple different devices simultaneously. This allows for easy visual comparison of performance characteristics across devices.
     *   Similarly, you can select multiple metrics for the same device or different devices to view them all on the page at once.
-*   **Chart Interactivity**: The charts are rendered using Chart.js and include features like:
-    *   **Tooltips**: Hover over data points to see exact values and timestamps.
-    *   **Zoom and Pan**: Use the mouse wheel to zoom in/out on chart areas and click-and-drag to pan across the chart. This is useful for inspecting data points more closely.
+*   **Chart Interactivity**: The charts are rendered using D3.js and include features like:
+    *   **Zoom and Pan**: Use the mouse wheel to zoom in/out on chart areas and click-and-drag to pan across the chart. This is useful for inspecting data points more closely. (Note: Tooltip functionality for specific data points is not currently implemented in this D3 version).
 *   **Layout**: Charts are arranged in a responsive grid, making it easy to view multiple plots regardless of screen size. Each chart is displayed with its title, indicating the metric and device.
 
 This reactive interface allows you to dynamically explore the performance characteristics of your storage devices based on the parsed iostat data.
