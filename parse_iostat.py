@@ -45,7 +45,7 @@ def _parse_timestamp(timestamp_str: str) -> datetime | None:
         "%m/%d/%Y %H:%M:%S",     # e.g., 03/22/2024 10:00:00 (24-hour)
         "%m/%d/%y %H:%M:%S",     # e.g., 03/22/24 10:00:00 (24-hour)
         "%Y-%m-%d %H:%M:%S",     # ISO-like e.g. 2024-03-22 10:00:00
-        "%Y-%m-%dT%H:%M:%S",    # ISO 8601 e.g. 2024-03-22T10:00:00 
+        "%Y-%m-%dT%H:%M:%S",    # ISO 8601 e.g. 2024-03-22T10:00:00
         "%d/%m/%Y %H:%M:%S",     # e.g., 22/03/2024 10:00:00
         "%d/%m/%y %H:%M:%S",     # e.g., 22/03/24 10:00:00
         "%d.%m.%Y %H:%M:%S",     # e.g., 22.03.2024 10:00:00
@@ -89,7 +89,7 @@ def _parse_block(timestamp_str: str, block_content: str) -> list[dict]:
     lines = block_content.strip().split('\n')
     device_data_list = []
     headers = []
-    
+
     device_section_started = False
     for line in lines:
         line = line.strip()
@@ -108,7 +108,7 @@ def _parse_block(timestamp_str: str, block_content: str) -> list[dict]:
                 continue
             device_section_started = True
             continue
-        
+
         if not device_section_started:
             # Lines before the "Device:" header are typically avg-cpu stats,
             # Linux version information, or empty lines. These should be skipped.
@@ -123,7 +123,7 @@ def _parse_block(timestamp_str: str, block_content: str) -> list[dict]:
             continue
 
         # We are now in the section where device data is expected.
-        if not headers: 
+        if not headers:
             # This state should ideally not be reached if "Device:" line was present and parsed.
             # If it is, it means we encountered a line that looks like data but had no preceding header.
             # Warn if the line seems to contain data (has digits).
@@ -170,16 +170,16 @@ def _parse_block(timestamp_str: str, block_content: str) -> list[dict]:
                 # If a value is missing for a header, log a warning and use 0.0.
                 print(f"Warning: Missing value for metric '{metric_key}' on device '{device_name}'. Using 0.0 instead. Line: '{line}'")
                 device_metrics[metric_key] = 0.0
-        
+
         # Add the parsed metrics for this device to the list if valid metrics were found
         # and the device name is not "avg-cpu" (a final safeguard).
-        if valid_metric_found and device_name: 
+        if valid_metric_found and device_name:
             if "avg-cpu" not in device_name and device_name.strip(): # Ensure device_name is not empty
                  device_data_list.append(device_metrics)
             elif "avg-cpu" in device_name:
                 # This case should ideally be caught earlier, but acts as a silent safeguard.
-                pass 
-    
+                pass
+
     return device_data_list
 
 def parse_iostat_file(file_path: str) -> pd.DataFrame:
@@ -218,7 +218,7 @@ def parse_iostat_file(file_path: str) -> pd.DataFrame:
     # matching common iostat timestamp formats (date followed by time, optional AM/PM).
     # Example: "03/22/2024 10:00:00 AM", "03/22/24 10:00:00"
     timestamp_pattern = r"(\d{2}/\d{2}/\d{2,4}\s+\d{2}:\d{2}:\d{2}(\s+(AM|PM))?)"
-    
+
     # Split the file content by timestamp lines.
     # The `re.split` function with a capturing group keeps the delimiters (timestamps)
     # in the resulting list, which is crucial for associating data blocks with their timestamps.
@@ -240,7 +240,7 @@ def parse_iostat_file(file_path: str) -> pd.DataFrame:
                 block_text = "\n".join(current_block_lines)
                 parsed_data = _parse_block(current_timestamp_str, block_text)
                 all_device_data.extend(parsed_data)
-            
+
             # Start a new block
             current_timestamp_str = stripped_part
             current_block_lines = []
@@ -261,11 +261,11 @@ def parse_iostat_file(file_path: str) -> pd.DataFrame:
     # Convert the list of dictionaries (each representing a device's stats at a timestamp)
     # into a pandas DataFrame.
     df = pd.DataFrame(all_device_data)
-    
+
     # Ensure the 'timestamp' column is of datetime type for proper sorting and plotting.
     if 'timestamp' in df.columns:
         df['timestamp'] = pd.to_datetime(df['timestamp'])
-        
+
     return df
 
 def prepare_chart_data(df: pd.DataFrame) -> list[dict]:
@@ -288,13 +288,13 @@ def prepare_chart_data(df: pd.DataFrame) -> list[dict]:
         print("Warning: No data available to prepare for charts (DataFrame is empty).")
         return []
 
-    chart_data_list = [] 
+    chart_data_list = []
 
     unique_devices = df['Device'].unique()
 
     for device_name in unique_devices:
         device_df = df[df['Device'] == device_name].sort_values(by='timestamp')
-        
+
         if device_df.empty:
             print(f"Info: No data for device {device_name} to plot (after filtering).")
             continue
@@ -313,9 +313,9 @@ def prepare_chart_data(df: pd.DataFrame) -> list[dict]:
             if device_df[metric_name].isnull().all() or (device_df[metric_name] == 0).all():
                 print(f"Info: Skipping data preparation for device {device_name}, metric {metric_name} as all values are null or zero.")
                 continue
-            
+
             title = f"Metric: {metric_name} for Device {device_name}"
-            
+
             max_val = device_df[metric_name].max()
             if pd.isna(max_val):
                 max_val_for_json = None
@@ -339,7 +339,7 @@ def prepare_chart_data(df: pd.DataFrame) -> list[dict]:
                 }
             }
             chart_data_list.append(metric_chart_data)
-                
+
     return chart_data_list
 
 def _sanitize_filename_part(part_name: str) -> str:
@@ -354,7 +354,7 @@ def _sanitize_filename_part(part_name: str) -> str:
     # This regex keeps only safe characters.
     name = re.sub(r'[^a-zA-Z0-9_.-]+', '_', name)
     # Ensure it doesn't start or end with problematic chars like '.' or '_' if it's not the only char
-    name = name.strip('._') 
+    name = name.strip('._')
     if not name: # if string becomes empty after sanitization
         return "unknown"
     return name
@@ -379,10 +379,10 @@ def generate_html_report(chart_data_list: list[dict], output_dir: str):
     for item in chart_data_list: # Iterate over the new chart_data_list
         device = item['device']
         metric = item['metric']
-        
+
         if device not in processed_data:
             processed_data[device] = {}
-        
+
         # New structure for processed_data, including series_data
         processed_data[device][metric] = {
             'title': item['title'],
@@ -400,7 +400,7 @@ def generate_html_report(chart_data_list: list[dict], output_dir: str):
     try:
         script_dir = os.path.dirname(os.path.abspath(__file__))
     except NameError: # __file__ is not defined if, for example, run in an interactive interpreter
-        script_dir = os.getcwd() 
+        script_dir = os.getcwd()
         print("Warning: __file__ not defined, assuming template is in current working directory.")
 
     template_path = os.path.join(script_dir, 'report_template.html')
@@ -452,11 +452,11 @@ def main():
         help="Path to the iostat output file. Defaults to 'iostat_output.log' if not provided."
     )
     parser.add_argument(
-        "-o", "--output_dir", 
-        default=".", 
+        "-o", "--output_dir",
+        default=".",
         help="Directory to save the generated graph image files. Defaults to the current directory."
     )
-    
+
     args = parser.parse_args()
 
     try:
@@ -465,10 +465,10 @@ def main():
 
         if iostat_df is not None and not iostat_df.empty:
             print(f"Info: Successfully parsed data. Found {len(iostat_df)} entries.")
-            
+
             chart_data = prepare_chart_data(iostat_df)
-            
-            if chart_data: 
+
+            if chart_data:
                 # Ensure output directory exists for the HTML report
                 os.makedirs(args.output_dir, exist_ok=True)
                 generate_html_report(chart_data, args.output_dir)
@@ -481,7 +481,7 @@ def main():
             # This case implies parsing happened but yielded no data
             print("Warning: No data parsed from the file. File might be empty, not in iostat format, or all data was malformed.")
             print("Info: No graphs will be generated.")
-        else: 
+        else:
             # This case implies a failure within parse_iostat_file that led to an empty DataFrame
             # but wasn't an outright exception (e.g. read error but not FileNotFoundError).
             print("Error: Failed to parse iostat data. No DataFrame was returned or an unexpected error occurred during parsing.")
