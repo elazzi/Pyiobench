@@ -19,11 +19,10 @@ Example:
 
 import re
 import pandas as pd
-import matplotlib.pyplot as plt
 import argparse
 from datetime import datetime
-import pandas as pd
 import os # For os.path.abspath
+import json # For HTML report generation
 
 def _parse_timestamp(timestamp_str: str) -> datetime | None:
     """
@@ -269,29 +268,27 @@ def parse_iostat_file(file_path: str) -> pd.DataFrame:
         
     return df
 
-def generate_graphs(df: pd.DataFrame, output_dir: str = '.'):
+def prepare_chart_data(df: pd.DataFrame) -> list[dict]:
     """
-    Generates and saves time-series graphs for each device found in the iostat DataFrame.
-
-    For each unique device, this function creates a plot showing all its metrics
-    over time. Graphs are saved as PNG files in the specified output directory.
-    The filename for each graph is derived from the device name.
+    Prepares data for charting, extracting time-series data for each metric
+    of each device.
 
     Args:
         df: A pandas DataFrame containing parsed iostat data. Expected columns
             include 'timestamp', 'Device', and various metric columns.
-        output_dir: The directory where graph image files (PNG) will be saved.
-            Defaults to the current directory.
-    """
-    print("Info: Generating graphs...")
-    if df.empty:
-        print("Warning: No data available to generate graphs (DataFrame is empty).")
-        return
 
-    # os.makedirs is called before this function in main, or by generate_graphs if called standalone.
-    # However, good to ensure it if this function could be called independently.
-    # For now, assume output_dir exists as main creates it via generate_graphs.
-    graph_metadata_list = [] # To store metadata of generated graphs
+    Returns:
+        A list of dictionaries, where each dictionary contains metadata and
+        series data for a specific metric of a specific device, ready for
+        JavaScript charting.
+        Returns an empty list if the input DataFrame is empty.
+    """
+    print("Info: Preparing chart data...")
+    if df.empty:
+        print("Warning: No data available to prepare for charts (DataFrame is empty).")
+        return []
+
+    chart_data_list = [] 
 
     unique_devices = df['Device'].unique()
 
@@ -305,51 +302,45 @@ def generate_graphs(df: pd.DataFrame, output_dir: str = '.'):
         metric_columns = [col for col in device_df.columns if col not in ['timestamp', 'Device']]
 
         if not metric_columns:
-            print(f"Warning: No metric columns found for device {device_name} to plot.")
+            print(f"Warning: No metric columns found for device {device_name}.")
             continue
 
-        safe_device_name = _sanitize_filename_part(device_name)
+        # safe_device_name = _sanitize_filename_part(device_name) # Not needed for chart data prep
 
         for metric_name in metric_columns:
+            # Skip if all values are null or zero - though JS charting might handle this,
+            # it can be good to preemptively filter.
             if device_df[metric_name].isnull().all() or (device_df[metric_name] == 0).all():
-                print(f"Info: Skipping graph for device {device_name}, metric {metric_name} as all values are null or zero.")
+                print(f"Info: Skipping data preparation for device {device_name}, metric {metric_name} as all values are null or zero.")
                 continue
-
-            fig, ax = plt.subplots(figsize=(10, 5)) # Adjusted size for single metric
             
-            ax.plot(device_df['timestamp'], device_df[metric_name], label=metric_name)
-            
-            ax.set_xlabel("Timestamp")
-            ax.set_ylabel(metric_name) # Y-axis label is the metric name
             title = f"Metric: {metric_name} for Device {device_name}"
-            ax.set_title(title)
-            # No legend needed for a single metric plot unless we add more info
             
-            plt.xticks(rotation=45, ha='right')
-            plt.tight_layout()
+            max_val = device_df[metric_name].max()
+            if pd.isna(max_val):
+                max_val_for_json = None
+            elif isinstance(max_val, (float, int)):
+                max_val_for_json = max_val
+            else:
+                max_val_for_json = float(max_val)
 
-            safe_metric_name = _sanitize_filename_part(metric_name)
-            filename = f"{safe_device_name}_{safe_metric_name}_iostat.png"
-            full_path = os.path.join(output_dir, filename)
+            # Prepare series data
+            timestamps_iso = device_df['timestamp'].dt.strftime('%Y-%m-%dT%H:%M:%S').tolist()
+            values_list = [v if pd.notna(v) else None for v in device_df[metric_name].tolist()]
 
-            try:
-                plt.savefig(full_path)
-                print(f"Info: Graph saved for device {device_name}, metric {metric_name} to {full_path}")
-                
-                graph_metadata = {
-                    'device': device_name,
-                    'metric': metric_name,
-                    'path': full_path, # Storing relative path as per spec
-                    'title': title
+            metric_chart_data = {
+                'device': device_name,
+                'metric': metric_name,
+                'title': title,
+                'max_value': max_val_for_json,
+                'series_data': {
+                    'timestamps': timestamps_iso,
+                    'values': values_list
                 }
-                graph_metadata_list.append(graph_metadata)
+            }
+            chart_data_list.append(metric_chart_data)
                 
-            except Exception as e:
-                print(f"Error: Could not save graph for device {device_name}, metric {metric_name} to {full_path}: {e}")
-            finally:
-                plt.close(fig) # Close the figure to free memory
-                
-    return graph_metadata_list
+    return chart_data_list
 
 def _sanitize_filename_part(part_name: str) -> str:
     """
@@ -368,206 +359,65 @@ def _sanitize_filename_part(part_name: str) -> str:
         return "unknown"
     return name
 
-def generate_html_report(graph_metadata_list: list[dict], output_dir: str):
+def generate_html_report(chart_data_list: list[dict], output_dir: str):
     """
-    Generates an HTML report to display the generated iostat graphs.
+    Generates an HTML report to display charts based on the prepared data.
 
-    The HTML file includes dropdowns to select devices and checkboxes for metrics,
-    allowing users to dynamically view the graph images.
+    The HTML file includes controls to select devices and metrics,
+    and will use a JavaScript charting library to render the graphs.
 
     Args:
-        graph_metadata_list: A list of dictionaries, where each dictionary
-                             contains metadata about a generated graph (device,
-                             metric, path, title).
+        chart_data_list: A list of dictionaries, where each dictionary
+                             contains metadata and series data for a chart.
         output_dir: The directory where the HTML report file will be saved.
     """
-    if not graph_metadata_list:
-        print("Info: No graph metadata provided. HTML report will not be generated.")
+    if not chart_data_list:
+        print("Info: No chart data provided. HTML report will not be generated.")
         return
 
     processed_data = {}
-    for item in graph_metadata_list:
+    for item in chart_data_list: # Iterate over the new chart_data_list
         device = item['device']
         metric = item['metric']
-        # Adjust path for HTML: make it relative to the HTML file location
-        # The HTML file is in output_dir, images are also in output_dir.
-        # So, path should be just the filename.
-        html_path = os.path.basename(item['path'])
         
         if device not in processed_data:
             processed_data[device] = {}
-        processed_data[device][metric] = {'path': html_path, 'title': item['title']}
+        
+        # New structure for processed_data, including series_data
+        processed_data[device][metric] = {
+            'title': item['title'],
+            'max_value': item.get('max_value'), # Already JSON-friendly
+            'series_data': item['series_data']  # Directly pass the series_data dict
+        }
 
     # Serialize processed_data to JSON for embedding in JavaScript
-    # Using a simple replace for quotes in JSON to avoid issues with Python's string formatting
-    # A more robust way would be to ensure no newlines/etc., or use a template engine.
-    json_data = json.dumps(processed_data).replace("'", "\\'") 
+    # Serialize processed_data to JSON for embedding in JavaScript
+    json_string_for_template = json.dumps(processed_data)
+    # Escape backslashes and single quotes for safe embedding within JavaScript single quotes
+    escaped_json_string = json_string_for_template.replace('\\', '\\\\').replace("'", "\\'")
 
+    # Determine the directory of the currently running script
+    try:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+    except NameError: # __file__ is not defined if, for example, run in an interactive interpreter
+        script_dir = os.getcwd() 
+        print("Warning: __file__ not defined, assuming template is in current working directory.")
 
-    html_content = f"""
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>iostat Metrics Report</title>
-    <style>
-        body {{ font-family: Arial, sans-serif; margin: 20px; background-color: #f4f4f4; color: #333; }}
-        h1 {{ text-align: center; color: #2c3e50; }}
-        .controls {{ margin-bottom: 20px; padding: 15px; background-color: #fff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); display: flex; align-items: center; gap: 15px; }}
-        .controls label {{ font-weight: bold; margin-right: 5px; }}
-        .controls select, .controls button {{ padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }}
-        .controls button {{ background-color: #3498db; color: white; cursor: pointer; transition: background-color 0.3s; }}
-        .controls button:hover {{ background-color: #2980b9; }}
-        #metricCheckboxes {{ display: flex; flex-wrap: wrap; gap: 10px; align-items: center; max-height: 100px; overflow-y: auto; padding: 5px; border: 1px solid #eee; border-radius: 4px; background: #f9f9f9; min-width: 200px;}}
-        #metricCheckboxes label {{ margin-right: 10px; font-weight: normal; display: flex; align-items: center;}}
-        #metricCheckboxes input[type="checkbox"] {{ margin-right: 5px; }}
-        #graphDisplayArea {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); /* Responsive grid */
-            gap: 20px;
-            padding-top: 20px;
-        }}
-        .graph-container {{
-            background-color: #fff;
-            padding: 15px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            text-align: center; /* Center title and image */
-        }}
-        .graph-container img {{ max-width: 100%; height: auto; border-radius: 4px; margin-top:10px; }}
-        .graph-container p {{ font-size: 0.9em; color: #555; margin-bottom: 10px; font-weight: bold;}}
-    </style>
-</head>
-<body>
-    <h1>iostat Metrics Report</h1>
+    template_path = os.path.join(script_dir, 'report_template.html')
 
-    <div class="controls">
-        <label for="deviceSelector">Select Device:</label>
-        <select id="deviceSelector"></select>
-        
-        <label>Select Metrics:</label>
-        <div id="metricCheckboxes">
-            <!-- Checkboxes will be populated here -->
-        </div>
-        
-        <button id="viewGraphsButton">View Selected Graphs</button>
-    </div>
+    try:
+        with open(template_path, 'r') as f:
+            html_template_content = f.read()
+    except FileNotFoundError:
+        print(f"Error: HTML template file not found at {template_path}")
+        print("Please ensure 'report_template.html' is in the same directory as the script.")
+        return
+    except Exception as e:
+        print(f"Error reading HTML template file {template_path}: {e}")
+        return
 
-    <div id="graphDisplayArea">
-        <!-- Graphs will be displayed here -->
-    </div>
-
-    <script>
-        const graphData = JSON.parse('{json_data}');
-
-        const deviceSelector = document.getElementById('deviceSelector');
-        const metricCheckboxes = document.getElementById('metricCheckboxes');
-        const viewGraphsButton = document.getElementById('viewGraphsButton');
-        const graphDisplayArea = document.getElementById('graphDisplayArea');
-
-        // Populate device selector on page load
-        function populateDeviceSelector() {{
-            const devices = Object.keys(graphData);
-            if (devices.length === 0) {{
-                deviceSelector.innerHTML = '<option value="">No devices found</option>';
-                return;
-            }}
-            devices.forEach(device => {{
-                const option = document.createElement('option');
-                option.value = device;
-                option.textContent = device;
-                deviceSelector.appendChild(option);
-            }});
-            // Trigger metric population for the first device (if any)
-            if (devices.length > 0) {{
-                populateMetricCheckboxes(devices[0]);
-            }}
-        }}
-
-        // Populate metric checkboxes based on selected device
-        function populateMetricCheckboxes(selectedDevice) {{
-            metricCheckboxes.innerHTML = ''; // Clear previous checkboxes
-            if (!selectedDevice || !graphData[selectedDevice]) {{
-                metricCheckboxes.innerHTML = '<span>Select a device to see metrics.</span>';
-                return;
-            }}
-
-            const metrics = Object.keys(graphData[selectedDevice]);
-            if (metrics.length === 0) {{
-                 metricCheckboxes.innerHTML = '<span>No metrics found for this device.</span>';
-                 return;
-            }}
-            metrics.forEach(metric => {{
-                const checkboxId = `metric-${selectedDevice}-${metric}`; // Unique ID
-                const checkboxLabel = document.createElement('label');
-                checkboxLabel.setAttribute('for', checkboxId);
-                
-                const checkbox = document.createElement('input');
-                checkbox.type = 'checkbox';
-                checkbox.id = checkboxId;
-                checkbox.value = metric;
-                checkbox.name = 'metric';
-                // checkbox.checked = true; // Optional: check all by default
-
-                checkboxLabel.appendChild(checkbox);
-                checkboxLabel.appendChild(document.createTextNode(metric));
-                metricCheckboxes.appendChild(checkboxLabel);
-            }});
-        }}
-
-        // Event listener for device selector change
-        deviceSelector.addEventListener('change', (event) => {{
-            populateMetricCheckboxes(event.target.value);
-        }});
-
-        // Event listener for "View Selected Graphs" button
-        viewGraphsButton.addEventListener('click', () => {{
-            graphDisplayArea.innerHTML = ''; // Clear previous graphs
-            const selectedDevice = deviceSelector.value;
-            
-            if (!selectedDevice || !graphData[selectedDevice]) {{
-                alert('Please select a device.');
-                return;
-            }}
-
-            const selectedMetrics = [];
-            metricCheckboxes.querySelectorAll('input[type="checkbox"]:checked').forEach(checkbox => {{
-                selectedMetrics.push(checkbox.value);
-            }});
-
-            if (selectedMetrics.length === 0) {{
-                alert('Please select at least one metric.');
-                return;
-            }}
-
-            selectedMetrics.forEach(metric => {{
-                if (graphData[selectedDevice][metric]) {{
-                    const item = graphData[selectedDevice][metric];
-                    
-                    const graphContainer = document.createElement('div');
-                    graphContainer.className = 'graph-container';
-                    
-                    const titleElement = document.createElement('p');
-                    titleElement.textContent = item.title;
-                    graphContainer.appendChild(titleElement);
-                    
-                    const img = document.createElement('img');
-                    img.src = item.path; // Path is already relative to output_dir
-                    img.alt = item.title;
-                    graphContainer.appendChild(img);
-                    
-                    graphDisplayArea.appendChild(graphContainer);
-                }}
-            }});
-        }});
-
-        // Initial population
-        populateDeviceSelector();
-    </script>
-</body>
-</html>
-    """
+    # Inject the JSON data into the template
+    html_content = html_template_content.replace('__GRAPH_DATA_JSON__', escaped_json_string)
 
     report_path = os.path.join(output_dir, 'iostat_report.html')
     try:
@@ -580,6 +430,7 @@ def generate_html_report(graph_metadata_list: list[dict], output_dir: str):
 def main():
     """
     Main execution function for the script.
+    This function orchestrates the script's workflow:
 
     This function orchestrates the script's workflow:
     1. Parses command-line arguments (input file path and optional output directory).
@@ -614,14 +465,16 @@ def main():
 
         if iostat_df is not None and not iostat_df.empty:
             print(f"Info: Successfully parsed data. Found {len(iostat_df)} entries.")
-            # generate_graphs will print its own "Info: Generating graphs..."
-            graph_metadata = generate_graphs(iostat_df, args.output_dir)
             
-            if graph_metadata: # If graphs were generated, create an HTML report
-                generate_html_report(graph_metadata, args.output_dir)
-                print(f"Info: Script finished successfully. Graphs and HTML report saved to {os.path.abspath(args.output_dir)}")
+            chart_data = prepare_chart_data(iostat_df)
+            
+            if chart_data: 
+                # Ensure output directory exists for the HTML report
+                os.makedirs(args.output_dir, exist_ok=True)
+                generate_html_report(chart_data, args.output_dir)
+                print(f"Info: Script finished successfully. HTML report saved to {os.path.abspath(args.output_dir)}")
             else:
-                print("Info: No graphs were generated, so no HTML report will be created.")
+                print("Info: No chart data was prepared, so no HTML report will be created.")
                 print(f"Info: Script finished. Check warnings if data was expected. Output directory: {os.path.abspath(args.output_dir)}")
 
         elif iostat_df is not None and iostat_df.empty:

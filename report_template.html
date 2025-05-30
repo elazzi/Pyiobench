@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>iostat Metrics Report</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1"></script>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f4f4f4; color: #333; }
+        h1 { text-align: center; color: #2c3e50; }
+        .controls { margin-bottom: 20px; padding: 15px; background-color: #fff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); display: flex; align-items: flex-start; gap: 15px; }
+        .controls > label { font-weight: bold; margin-right: 5px; margin-bottom: 5px; display: block; padding-top: 5px; }
+        #metricCheckboxes { 
+            display: flex; 
+            flex-direction: column;
+            gap: 15px; 
+            padding: 10px; 
+            border: 1px solid #ddd; 
+            border-radius: 4px; 
+            background: #f9f9f9; 
+            min-width: 300px;
+            max-height: 300px; /* Increased max-height for better scroll */
+            overflow-y: auto;
+        }
+        .device-metric-group { margin-bottom: 10px; border-bottom: 1px solid #eee; padding-bottom: 10px; }
+        .device-metric-group:last-child { border-bottom: none; }
+        .device-metric-group h3 { font-size: 1.1em; margin-top: 0; margin-bottom: 8px; color: #34495e; }
+        .metric-options { display: flex; flex-wrap: wrap; gap: 8px; }
+        .metric-options label { margin-right: 10px; font-weight: normal; display: inline-flex; align-items: center; font-size: 0.9em; background-color: #e9ecef; padding: 3px 6px; border-radius: 3px; cursor: pointer;}
+        .metric-options input[type="checkbox"] { margin-right: 5px; }
+        .metric-max-value { font-size: 0.8em; color: #7f8c8d; margin-left: 4px; }
+        #graphDisplayArea {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(450px, 1fr)); 
+            gap: 20px;
+            padding-top: 20px;
+        }
+        .graph-container {
+            background-color: #fff;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            /* text-align: center; */ /* No longer needed if title is part of chart options */
+            height: 350px; /* Or use aspect-ratio if preferred and widely supported */
+            position: relative; /* For canvas responsiveness */
+        }
+        .graph-container canvas { /* Canvas itself does not need much styling here */ }
+        .graph-container p.chart-title { /* Style for title, if added manually above canvas */
+            font-size: 1em; color: #555; margin-bottom: 10px; font-weight: bold; text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <h1>iostat Metrics Report</h1>
+
+    <div class="controls">
+        <label>Select Metrics to Display:</label>
+        <div id="metricCheckboxes">
+            <!-- Checkboxes for devices and their metrics will be populated here by JavaScript -->
+        </div>
+    </div>
+
+    <div id="graphDisplayArea">
+        <!-- Graphs will be displayed here -->
+    </div>
+
+    <script>
+        const graphData = JSON.parse('__GRAPH_DATA_JSON__'); 
+        const activeCharts = {}; // Object to store active chart instances
+
+        const metricCheckboxesContainer = document.getElementById('metricCheckboxes');
+        const graphDisplayArea = document.getElementById('graphDisplayArea');
+
+        function initializeMetricSelectors() {
+            metricCheckboxesContainer.innerHTML = ''; 
+
+            const devices = Object.keys(graphData);
+            if (devices.length === 0) {
+                metricCheckboxesContainer.innerHTML = '<p>No devices found in data.</p>';
+                return;
+            }
+
+            devices.forEach(device => {
+                const deviceGroupDiv = document.createElement('div');
+                deviceGroupDiv.className = 'device-metric-group';
+                
+                const deviceTitle = document.createElement('h3');
+                deviceTitle.textContent = `Device: ${device}`;
+                deviceGroupDiv.appendChild(deviceTitle);
+
+                const metricsContainer = document.createElement('div');
+                metricsContainer.className = 'metric-options';
+
+                const metrics = Object.keys(graphData[device]);
+                if (metrics.length === 0) {
+                    metricsContainer.innerHTML = '<span>No metrics found for this device.</span>';
+                } else {
+                    metrics.forEach(metric => {
+                        const checkboxId = `checkbox-${device}-${metric}`; 
+                        const label = document.createElement('label');
+                        label.setAttribute('for', checkboxId);
+                        
+                        const checkbox = document.createElement('input');
+                        checkbox.type = 'checkbox';
+                        checkbox.id = checkboxId;
+                        checkbox.dataset.device = device; 
+                        checkbox.dataset.metric = metric; 
+                        
+                        checkbox.addEventListener('change', handleCheckboxChange); 
+
+                        label.appendChild(checkbox);
+                        
+                        let labelText = metric;
+                        const metricInfo = graphData[device][metric]; // Contains title, max_value, series_data
+                        if (metricInfo && typeof metricInfo.max_value !== 'undefined') {
+                            let maxText = '(Max: N/A)';
+                            if (metricInfo.max_value !== null) {
+                                maxText = `(Max: ${parseFloat(metricInfo.max_value).toFixed(2)})`;
+                            }
+                            labelText += ` <span class="metric-max-value">${maxText}</span>`;
+                        }
+                        
+                        const textSpan = document.createElement('span');
+                        textSpan.innerHTML = labelText; 
+                        label.appendChild(textSpan);
+                        
+                        metricsContainer.appendChild(label);
+                    });
+                }
+                deviceGroupDiv.appendChild(metricsContainer);
+                metricCheckboxesContainer.appendChild(deviceGroupDiv);
+            });
+        }
+
+        function handleCheckboxChange(event) {
+            const checkbox = event.target;
+            const device = checkbox.dataset.device;
+            const metric = checkbox.dataset.metric;
+            const graphContainerId = `graph-container-${device}-${metric}`;
+            const canvasId = `chart-canvas-${device}-${metric}`;
+
+            if (checkbox.checked) {
+                if (!document.getElementById(graphContainerId) && graphData[device] && graphData[device][metric]) {
+                    const item = graphData[device][metric];
+                    
+                    const graphContainer = document.createElement('div');
+                    graphContainer.className = 'graph-container';
+                    graphContainer.id = graphContainerId;
+                    
+                    // Optional: Add title <p> element if Chart.js title is not sufficient or for consistency
+                    // const titleElement = document.createElement('p');
+                    // titleElement.className = 'chart-title';
+                    // titleElement.textContent = item.title;
+                    // graphContainer.appendChild(titleElement);
+                    
+                    const canvas = document.createElement('canvas');
+                    canvas.id = canvasId;
+                    graphContainer.appendChild(canvas);
+                    
+                    graphDisplayArea.appendChild(graphContainer);
+
+                    const ctx = canvas.getContext('2d');
+                    const chart = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: item.series_data.timestamps,
+                            datasets: [{
+                                label: metric, // Metric name for dataset label
+                                data: item.series_data.values,
+                                borderColor: 'rgb(75, 192, 192)',
+                                tension: 0.1,
+                                fill: false
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            scales: {
+                                x: {
+                                    type: 'time', // Requires Chart.js time adapter if not built-in for ISO
+                                    time: { // Optional: configuration for time scale if adapter is used
+                                        // unit: 'minute', // Example: display ticks per minute
+                                        // tooltipFormat: 'yyyy-MM-dd HH:mm:ss'
+                                    },
+                                    title: { display: true, text: 'Timestamp' }
+                                },
+                                y: {
+                                    title: { display: true, text: metric }
+                                }
+                            },
+                            plugins: {
+                                title: {
+                                    display: true,
+                                    text: item.title // Full descriptive title for the chart
+                                },
+                                zoom: {
+                                    pan: {
+                                        enabled: true,
+                                        mode: 'xy',
+                                        threshold: 5, // Minimum pan distance to trigger
+                                    },
+                                    zoom: {
+                                        wheel: { enabled: true },
+                                        pinch: { enabled: true },
+                                        mode: 'xy'
+                                    }
+                                }
+                            }
+                        }
+                    });
+                    activeCharts[graphContainerId] = chart;
+                }
+            } else {
+                // Destroy chart and remove container
+                if (activeCharts[graphContainerId]) {
+                    activeCharts[graphContainerId].destroy();
+                    delete activeCharts[graphContainerId];
+                }
+                const graphElement = document.getElementById(graphContainerId);
+                if (graphElement) {
+                    graphDisplayArea.removeChild(graphElement);
+                }
+            }
+        }
+        
+        // Initial population
+        initializeMetricSelectors();
+    </script>
+</body>
+</html>
