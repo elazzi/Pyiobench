@@ -8,13 +8,14 @@ It extracts metrics like r/s, w/s, %util, etc., for each storage device.
 Graphs are saved as PNG files in a specified output directory.
 
 Basic Command-Line Usage:
-    python parse_iostat.py [input_file_path] [-o <output_directory>]
+    python parse_iostat.py [input_file_path] [-o <output_directory>] [-xd <device1> <device2> ...]
 
 If `input_file_path` is omitted, it defaults to `iostat_output.log` in the current directory.
 
 Example:
     python parse_iostat.py ./my_iostat_log.txt -o ./iostat_graphs
     python parse_iostat.py -o ./graphs  # Processes default 'iostat_output.log'
+    python parse_iostat.py iostat.log -o reports -xd sda sdb loop0 # Excludes sda, sdb, loop0
 """
 
 import re
@@ -101,9 +102,9 @@ def _parse_block(timestamp_str: str, block_content: str) -> list[dict]:
             headers = re.split(r'\s+', line) # Split by any whitespace
             # Some iostat versions might have "Device:" as the first token, others just "Device"
             if headers[0] == "Device:" or headers[0] == "Device":
-                 # Normalize column names, remove problematic characters if any for dict keys
+                # Normalize column names, remove problematic characters if any for dict keys
                 headers = [h.replace('%', 'pct_') for h in headers] # pct_util instead of %util
-            else: #This was not a valid header line
+            else: #This was not a valid header line:
                 headers = [] # Reset headers if it's not a proper device line
                 continue
             device_section_started = True
@@ -128,7 +129,7 @@ def _parse_block(timestamp_str: str, block_content: str) -> list[dict]:
             # If it is, it means we encountered a line that looks like data but had no preceding header.
             # Warn if the line seems to contain data (has digits).
             if line.strip() and any(char.isdigit() for char in line):
-                 print(f"Warning: Skipping data line due to missing headers (was 'Device:' line found and parsed for this block?): '{line}'")
+                print(f"Warning: Skipping data line due to missing headers (was 'Device:' line found and parsed for this block?): '{line}'")
             continue
 
         # Split the data line into values based on whitespace.
@@ -138,7 +139,7 @@ def _parse_block(timestamp_str: str, block_content: str) -> list[dict]:
             # this line is likely malformed or not a standard device data line.
             # Print a warning if it looks like it was intended to be data.
             if len(values) > 1 and any(v.replace('.', '', 1).replace(',', '', 1).isdigit() for v in values[1:]):
-                 print(f"Warning: Skipping malformed data line (column count mismatch: {len(values)} fields, expected {len(headers)}). Line: '{line}'")
+                print(f"Warning: Skipping malformed data line (column count mismatch: {len(values)} fields, expected {len(headers)}). Line: '{line}'")
             continue # Skip this malformed line
 
 
@@ -146,7 +147,7 @@ def _parse_block(timestamp_str: str, block_content: str) -> list[dict]:
         # Defensive check: ensure device name is not something like "avg-cpu:" or "Device:"
         # which might happen if parsing logic is imperfect or iostat output is unusual.
         if device_name in ["avg-cpu:", "Device:"]:
-             continue
+            continue
 
         # Prepare a dictionary to store metrics for the current device and timestamp.
         device_metrics = {'timestamp': parsed_timestamp, 'Device': device_name}
@@ -175,7 +176,7 @@ def _parse_block(timestamp_str: str, block_content: str) -> list[dict]:
         # and the device name is not "avg-cpu" (a final safeguard).
         if valid_metric_found and device_name:
             if "avg-cpu" not in device_name and device_name.strip(): # Ensure device_name is not empty
-                 device_data_list.append(device_metrics)
+                device_data_list.append(device_metrics)
             elif "avg-cpu" in device_name:
                 # This case should ideally be caught earlier, but acts as a silent safeguard.
                 pass
@@ -225,7 +226,7 @@ def parse_iostat_file(file_path: str) -> pd.DataFrame:
     parts = re.split(f'({timestamp_pattern})', content)
 
     current_timestamp_str = None  # Holds the timestamp for the current block being processed
-    current_block_lines = []    # Accumulates lines belonging to the current_timestamp_str
+    current_block_lines = []      # Accumulates lines belonging to the current_timestamp_str
 
     # Iterate through the parts. Parts will alternate between timestamps and blocks of text.
     for part in parts:
@@ -296,7 +297,8 @@ def prepare_chart_data(df: pd.DataFrame) -> list[dict]:
         device_df = df[df['Device'] == device_name].sort_values(by='timestamp')
 
         if device_df.empty:
-            print(f"Info: No data for device {device_name} to plot (after filtering).")
+            # This might happen if a device was present but all its data rows were filtered out due to exclusion.
+            # print(f"Info: No data for device {device_name} to plot (after filtering).") # Already handled if df is empty before this loop
             continue
 
         metric_columns = [col for col in device_df.columns if col not in ['timestamp', 'Device']]
@@ -310,9 +312,9 @@ def prepare_chart_data(df: pd.DataFrame) -> list[dict]:
         for metric_name in metric_columns:
             # Skip if all values are null or zero - though JS charting might handle this,
             # it can be good to preemptively filter.
-            if device_df[metric_name].isnull().all() or (device_df[metric_name] == 0).all():
-                print(f"Info: Skipping data preparation for device {device_name}, metric {metric_name} as all values are null or zero.")
-                continue
+            # if device_df[metric_name].isnull().all() or (device_df[metric_name] == 0).all():
+            #     # print(f"Info: Skipping data preparation for device {device_name}, metric {metric_name} as all values are null or zero.")
+            #     continue # Reduced verbosity here, the main check is if chart_data_list is empty later
 
             title = f"Metric: {metric_name} for Device {device_name}"
 
@@ -391,7 +393,6 @@ def generate_html_report(chart_data_list: list[dict], output_dir: str):
         }
 
     # Serialize processed_data to JSON for embedding in JavaScript
-    # Serialize processed_data to JSON for embedding in JavaScript
     json_string_for_template = json.dumps(processed_data)
     # Escape backslashes and single quotes for safe embedding within JavaScript single quotes
     escaped_json_string = json_string_for_template.replace('\\', '\\\\').replace("'", "\\'")
@@ -419,7 +420,7 @@ def generate_html_report(chart_data_list: list[dict], output_dir: str):
     # Inject the JSON data into the template
     html_content = html_template_content.replace('__GRAPH_DATA_JSON__', escaped_json_string)
 
-    report_path = os.path.join(output_dir, 'iostat_report.html')
+    report_path = os.path.join(output_dir, 'iostat_report2.html')
     try:
         with open(report_path, 'w') as f:
             f.write(html_content)
@@ -432,12 +433,11 @@ def main():
     Main execution function for the script.
     This function orchestrates the script's workflow:
 
-    This function orchestrates the script's workflow:
-    1. Parses command-line arguments (input file path and optional output directory).
+    1. Parses command-line arguments (input file path, optional output directory, and excluded devices).
     2. Calls `parse_iostat_file` to process the iostat log.
-    3. If parsing is successful and data is returned, calls `generate_graphs`
-       to create and save plots.
-    4. Handles potential errors like file not found or other exceptions during execution.
+    3. Filters out excluded devices from the parsed data.
+    4. If data remains, calls `prepare_chart_data` and `generate_html_report`.
+    5. Handles potential errors like file not found or other exceptions during execution.
     """
     # Set up command-line argument parsing
     parser = argparse.ArgumentParser(
@@ -454,7 +454,14 @@ def main():
     parser.add_argument(
         "-o", "--output_dir",
         default=".",
-        help="Directory to save the generated graph image files. Defaults to the current directory."
+        help="Directory to save the generated HTML report file. Defaults to the current directory."
+    )
+    parser.add_argument(
+        "-xd", "--exclude-devices",
+        nargs='*', # 0 or more device names
+        default=[], # Default to an empty list (no exclusions)
+        type=str,
+        help="List of device names to exclude from the report (e.g., -xd sda loop0 nvme0n1p1)."
     )
 
     args = parser.parse_args()
@@ -464,28 +471,53 @@ def main():
         iostat_df = parse_iostat_file(args.input_file)
 
         if iostat_df is not None and not iostat_df.empty:
-            print(f"Info: Successfully parsed data. Found {len(iostat_df)} entries.")
+            print(f"Info: Successfully parsed data. Found {len(iostat_df)} total entries before exclusion.")
 
+            if args.exclude_devices:
+                devices_before_exclusion = set(iostat_df['Device'].unique())
+                iostat_df = iostat_df[~iostat_df['Device'].isin(args.exclude_devices)]
+                devices_after_exclusion = set(iostat_df['Device'].unique())
+                
+                excluded_actually_found = devices_before_exclusion.intersection(set(args.exclude_devices))
+                
+                if excluded_actually_found:
+                    print(f"Info: Attempted to exclude: {', '.join(args.exclude_devices)}.")
+                    print(f"Info: Successfully excluded data for device(s): {', '.join(sorted(list(excluded_actually_found)))}.")
+                else:
+                    print(f"Info: No specified devices for exclusion ({', '.join(args.exclude_devices)}) were found in the parsed data.")
+
+
+                if iostat_df.empty:
+                    print("Warning: All data was excluded or no data remained after applying exclusions.")
+                    print(f"Info: Script finished. No report generated. Output directory: {os.path.abspath(args.output_dir)}")
+                    return # Exit if no data left
+
+            if iostat_df.empty: # Check again in case exclusion made it empty
+                print("Info: No data available after potential exclusions. No report will be generated.")
+                print(f"Info: Script finished. Output directory: {os.path.abspath(args.output_dir)}")
+                return
+
+            print(f"Info: Proceeding with {len(iostat_df['Device'].unique())} device(s) and {len(iostat_df)} entries for report generation.")
             chart_data = prepare_chart_data(iostat_df)
 
             if chart_data:
                 # Ensure output directory exists for the HTML report
                 os.makedirs(args.output_dir, exist_ok=True)
                 generate_html_report(chart_data, args.output_dir)
-                print(f"Info: Script finished successfully. HTML report saved to {os.path.abspath(args.output_dir)}")
+                print(f"Info: Script finished successfully. HTML report potentially saved to {os.path.abspath(args.output_dir)}")
             else:
-                print("Info: No chart data was prepared, so no HTML report will be created.")
+                print("Info: No chart data was prepared (e.g., all metrics were zero/null for remaining devices), so no HTML report will be created.")
                 print(f"Info: Script finished. Check warnings if data was expected. Output directory: {os.path.abspath(args.output_dir)}")
 
         elif iostat_df is not None and iostat_df.empty:
-            # This case implies parsing happened but yielded no data
+            # This case implies parsing happened but yielded no data initially
             print("Warning: No data parsed from the file. File might be empty, not in iostat format, or all data was malformed.")
-            print("Info: No graphs will be generated.")
+            print("Info: No report will be generated.")
         else:
             # This case implies a failure within parse_iostat_file that led to an empty DataFrame
             # but wasn't an outright exception (e.g. read error but not FileNotFoundError).
             print("Error: Failed to parse iostat data. No DataFrame was returned or an unexpected error occurred during parsing.")
-            print("Info: No graphs will be generated.")
+            print("Info: No report will be generated.")
 
     except FileNotFoundError:
         print(f"Error: Input file not found: '{args.input_file}'. Please check the path.")
