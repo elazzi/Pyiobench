@@ -8,7 +8,14 @@
     <style>
         body { font-family: Arial, sans-serif; margin: 20px; background-color: #f4f4f4; color: #333; }
         h1 { text-align: center; color: #2c3e50; }
-        .controls { margin-bottom: 20px; padding: 15px; background-color: #fff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); display: flex; align-items: flex-start; gap: 15px; }
+        .controls {
+            margin-bottom: 20px;
+            padding: 15px;
+            background-color: #fff;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            display: block;
+        }
         .controls > label { font-weight: bold; margin-right: 5px; margin-bottom: 5px; display: block; padding-top: 5px; }
         #metricCheckboxes {
             display: flex;
@@ -30,8 +37,8 @@
         .metric-options input[type="checkbox"] { margin-right: 5px; }
         .metric-max-value { font-size: 0.8em; color: #7f8c8d; margin-left: 4px; }
         #graphDisplayArea {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
+            display: flex;
+            flex-direction: column;
             gap: 20px;
             padding-top: 20px;
         }
@@ -72,13 +79,132 @@
             opacity: 0;
             transition: opacity 0.2s;
         }
+        .metric-bulk-select {
+            margin-bottom: 16px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 18px;
+            align-items: center;
+        }
+        .bulk-select-group {
+            display: flex;
+            align-items: center;
+            background: #f5f5f5;
+            border-radius: 6px;
+            padding: 6px 10px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+            margin-right: 10px;
+        }
+        .bulk-select-label {
+            font-weight: 500;
+            margin-right: 8px;
+            color: #2c3e50;
+        }
+        .bulk-select-btn {
+            margin-right: 6px;
+            padding: 3px 10px;
+            border-radius: 4px;
+            border: 1px solid #bbb;
+            background: #e0eaff;
+            cursor: pointer;
+            font-size: 0.95em;
+            transition: background 0.2s;
+        }
+        .bulk-select-btn:hover {
+            background: #b3d1ff;
+        }
+        .bulk-select-input {
+            width: 70px;
+            margin-left: 6px;
+            margin-right: 6px;
+            padding: 2px 4px;
+            border: 1px solid #bbb;
+            border-radius: 3px;
+            font-size: 0.95em;
+        }
+        .synthetic-sum-section {
+            margin: 18px 0 28px 0;
+            padding: 14px 18px;
+            background: #f5f5f5;
+            border-radius: 8px;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+            display: flex;
+            align-items: center;
+            gap: 18px;
+        }
+        .synthetic-sum-label {
+            font-weight: 600;
+            margin-right: 8px;
+            color: #2c3e50;
+        }
+        .synthetic-sum-select {
+            min-width: 120px;
+            padding: 4px 8px;
+            border-radius: 4px;
+            border: 1px solid #bbb;
+            font-size: 1em;
+            margin-right: 10px;
+        }
+        .synthetic-sum-date-label {
+            font-weight: 500;
+            margin-left: 10px;
+            margin-right: 4px;
+            color: #2c3e50;
+        }
+        .synthetic-sum-date-input {
+            padding: 3px 8px;
+            border-radius: 4px;
+            border: 1px solid #bbb;
+            font-size: 1em;
+            margin-right: 8px;
+        }
+        .synthetic-sum-btn {
+            padding: 5px 16px;
+            border-radius: 4px;
+            border: 1px solid #bbb;
+            background: #e0eaff;
+            cursor: pointer;
+            font-size: 1em;
+            font-weight: 500;
+            transition: background 0.2s;
+        }
+        .synthetic-sum-btn:hover {
+            background: #b3d1ff;
+        }
+        .global-date-section {
+            margin: 0 0 18px 0;
+            padding: 10px 18px;
+            background: #f0f6ff;
+            border-radius: 8px;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+            display: flex;
+            align-items: center;
+            gap: 18px;
+        }
+        .global-date-label {
+            font-weight: 600;
+            margin-right: 8px;
+            color: #2c3e50;
+        }
+        .global-date-input {
+            padding: 3px 8px;
+            border-radius: 4px;
+            border: 1px solid #bbb;
+            font-size: 1em;
+            margin-right: 8px;
+        }
     </style>
 </head>
 <body>
     <h1>iostat Metrics Report</h1>
 
     <div class="controls">
+        <div id="globalDateSection"></div>
         <label>Select Metrics to Display:</label>
+        <div class="metric-bulk-select" id="bulkMetricSelectors">
+            <!-- Bulk metric selectors will be populated here by JavaScript -->
+        </div>
+        <div id="syntheticSumSection"></div>
         <div id="metricCheckboxes">
             <!-- Checkboxes for devices and their metrics will be populated here by JavaScript -->
         </div>
@@ -94,6 +220,208 @@
 
         const metricCheckboxesContainer = document.getElementById('metricCheckboxes');
         const graphDisplayArea = document.getElementById('graphDisplayArea');
+        const bulkMetricSelectorsContainer = document.getElementById('bulkMetricSelectors');
+
+        let globalDateRange = { from: null, to: null };
+        function initializeGlobalDateSection() {
+            const section = document.getElementById('globalDateSection');
+            section.innerHTML = '';
+            const devices = Object.keys(graphData);
+            if (devices.length === 0) return;
+            // Get all available timestamps (ISO format) from all devices/metrics
+            let allTimestamps = new Set();
+            devices.forEach(device => {
+                Object.values(graphData[device]).forEach(metricObj => {
+                    if (metricObj && metricObj.series_data && Array.isArray(metricObj.series_data.timestamps)) {
+                        metricObj.series_data.timestamps.forEach(ts => allTimestamps.add(ts));
+                    }
+                });
+            });
+            allTimestamps = Array.from(allTimestamps).sort();
+            if (allTimestamps.length === 0) return;
+            // UI
+            const container = document.createElement('div');
+            container.className = 'global-date-section';
+            const label = document.createElement('span');
+            label.className = 'global-date-label';
+            label.textContent = 'Filter all graphs by date:';
+            container.appendChild(label);
+            const dateFrom = document.createElement('select');
+            dateFrom.className = 'global-date-input';
+            allTimestamps.forEach(ts => {
+                const opt = document.createElement('option');
+                opt.value = ts;
+                opt.textContent = ts;
+                dateFrom.appendChild(opt);
+            });
+            container.appendChild(dateFrom);
+            const labelTo = document.createElement('span');
+            labelTo.className = 'global-date-label';
+            labelTo.textContent = 'To:';
+            container.appendChild(labelTo);
+            const dateTo = document.createElement('select');
+            dateTo.className = 'global-date-input';
+            allTimestamps.forEach(ts => {
+                const opt = document.createElement('option');
+                opt.value = ts;
+                opt.textContent = ts;
+                dateTo.appendChild(opt);
+            });
+            dateTo.selectedIndex = allTimestamps.length - 1;
+            container.appendChild(dateTo);
+            // Save and trigger global range
+            function updateGlobalRange() {
+                const fromIdx = dateFrom.selectedIndex;
+                const toIdx = dateTo.selectedIndex;
+                if (fromIdx > toIdx) {
+                    alert('Start date must be before end date.');
+                    return;
+                }
+                globalDateRange.from = dateFrom.value;
+                globalDateRange.to = dateTo.value;
+                // Redraw all graphs
+                redrawAllGraphs();
+            }
+            dateFrom.onchange = updateGlobalRange;
+            dateTo.onchange = updateGlobalRange;
+            section.appendChild(container);
+            // Set initial range
+            globalDateRange.from = dateFrom.value;
+            globalDateRange.to = dateTo.value;
+        }
+
+        function initializeBulkMetricSelectors() {
+            bulkMetricSelectorsContainer.innerHTML = '';
+            const devices = Object.keys(graphData);
+            if (devices.length === 0) return;
+            // Collect all unique metrics across all devices
+            const allMetrics = new Set();
+            devices.forEach(device => {
+                Object.keys(graphData[device]).forEach(metric => allMetrics.add(metric));
+            });
+            allMetrics.forEach(metric => {
+                const group = document.createElement('div');
+                group.className = 'bulk-select-group';
+
+                const label = document.createElement('span');
+                label.className = 'bulk-select-label';
+                label.textContent = metric;
+                group.appendChild(label);
+
+                const btnAll = document.createElement('button');
+                btnAll.textContent = 'Select all';
+                btnAll.className = 'bulk-select-btn';
+                btnAll.onclick = () => {
+                    devices.forEach(device => {
+                        const checkbox = document.getElementById(`checkbox-${device}-${metric}`);
+                        if (checkbox && !checkbox.checked) {
+                            checkbox.checked = true;
+                            checkbox.dispatchEvent(new Event('change'));
+                        }
+                    });
+                };
+                group.appendChild(btnAll);
+
+                const btnClear = document.createElement('button');
+                btnClear.textContent = 'Clear all';
+                btnClear.className = 'bulk-select-btn';
+                btnClear.onclick = () => {
+                    devices.forEach(device => {
+                        const checkbox = document.getElementById(`checkbox-${device}-${metric}`);
+                        if (checkbox && checkbox.checked) {
+                            checkbox.checked = false;
+                            checkbox.dispatchEvent(new Event('change'));
+                        }
+                    });
+                };
+                group.appendChild(btnClear);
+
+                const input = document.createElement('input');
+                input.type = 'number';
+                input.className = 'bulk-select-input';
+                input.placeholder = 'min max';
+                input.min = 0;
+                group.appendChild(input);
+
+                const btnThreshold = document.createElement('button');
+                btnThreshold.textContent = 'Select >';
+                btnThreshold.className = 'bulk-select-btn';
+                btnThreshold.onclick = () => {
+                    let minVal = parseFloat(input.value);
+                    if (!isNaN(minVal)) {
+                        devices.forEach(device => {
+                            const metricInfo = graphData[device][metric];
+                            if (metricInfo && metricInfo.max_value !== null && metricInfo.max_value > minVal) {
+                                const checkbox = document.getElementById(`checkbox-${device}-${metric}`);
+                                if (checkbox && !checkbox.checked) {
+                                    checkbox.checked = true;
+                                    checkbox.dispatchEvent(new Event('change'));
+                                }
+                            }
+                        });
+                    } else {
+                        input.focus();
+                        input.style.borderColor = '#e74c3c';
+                        setTimeout(() => { input.style.borderColor = '#bbb'; }, 1200);
+                    }
+                };
+                group.appendChild(btnThreshold);
+
+                // Synthetic graph button
+                const btnSynthetic = document.createElement('button');
+                btnSynthetic.textContent = 'Sum selected';
+                btnSynthetic.className = 'bulk-select-btn';
+                btnSynthetic.onclick = () => {
+                    // Find all checked checkboxes for this metric
+                    const selectedDevices = devices.filter(device => {
+                        const checkbox = document.getElementById(`checkbox-${device}-${metric}`);
+                        return checkbox && checkbox.checked;
+                    });
+                    if (selectedDevices.length < 2) {
+                        alert('Select at least two disks for summation.');
+                        return;
+                    }
+                    // Build synthetic data
+                    const timestamps = graphData[selectedDevices[0]][metric].series_data.timestamps;
+                    const sumValues = timestamps.map((ts, idx) => {
+                        let sum = 0;
+                        selectedDevices.forEach(device => {
+                            const val = graphData[device][metric].series_data.values[idx];
+                            sum += (typeof val === 'number' ? val : 0);
+                        });
+                        return sum;
+                    });
+                    // Create synthetic chart container
+                    const syntheticId = `d3-graph-container-sum-${metric}`;
+                    if (document.getElementById(syntheticId)) {
+                        alert('Synthetic sum graph for this metric already exists.');
+                        return;
+                    }
+                    const graphContainer = document.createElement('div');
+                    graphContainer.className = 'graph-container';
+                    graphContainer.id = syntheticId;
+                    const titleElement = document.createElement('p');
+                    titleElement.className = 'chart-title';
+                    titleElement.textContent = `Synthetic sum of ${metric} for: ` + selectedDevices.join(', ');
+                    graphContainer.appendChild(titleElement);
+                    const svgContainer = document.createElement('div');
+                    svgContainer.className = 'd3-svg-container';
+                    graphContainer.appendChild(svgContainer);
+                    graphDisplayArea.appendChild(graphContainer);
+                    // Draw chart
+                    drawD3Chart(
+                        svgContainer,
+                        { timestamps: timestamps, values: sumValues },
+                        titleElement.textContent,
+                        Math.max(...sumValues),
+                        metric + ' (sum)'
+                    );
+                };
+                group.appendChild(btnSynthetic);
+
+                bulkMetricSelectorsContainer.appendChild(group);
+            });
+        }
 
         function initializeMetricSelectors() {
             metricCheckboxesContainer.innerHTML = '';
@@ -175,12 +503,12 @@
                     titleElement.textContent = item.title;
                     graphContainer.appendChild(titleElement);
 
-                    const svgContainer = document.createElement('div'); // This div will directly contain the SVG
+                    const svgContainer = document.createElement('div');
                     svgContainer.className = 'd3-svg-container';
                     graphContainer.appendChild(svgContainer);
 
                     graphDisplayArea.appendChild(graphContainer);
-                    drawD3Chart(svgContainer, item.series_data, item.title, item.max_value, metric);
+                    drawD3Chart(svgContainer, filterSeriesByGlobalDate(item.series_data), item.title, item.max_value, metric);
                 }
             } else {
                 const graphElement = document.getElementById(graphContainerId);
@@ -293,6 +621,184 @@
                 .call(zoom);
         }
 
+        function initializeSyntheticSumSection() {
+            const section = document.getElementById('syntheticSumSection');
+            section.innerHTML = '';
+            const devices = Object.keys(graphData);
+            if (devices.length === 0) return;
+            // Build metric list (intersection of all metrics for simplicity)
+            let allMetrics = new Set();
+            devices.forEach(device => {
+                Object.keys(graphData[device]).forEach(metric => allMetrics.add(metric));
+            });
+            allMetrics = Array.from(allMetrics);
+
+            // Get all available timestamps (ISO format) from all devices/metrics
+            let allTimestamps = new Set();
+            devices.forEach(device => {
+                Object.values(graphData[device]).forEach(metricObj => {
+                    if (metricObj && metricObj.series_data && Array.isArray(metricObj.series_data.timestamps)) {
+                        metricObj.series_data.timestamps.forEach(ts => allTimestamps.add(ts));
+                    }
+                });
+            });
+            allTimestamps = Array.from(allTimestamps).sort();
+            if (allTimestamps.length === 0) return;
+
+            // UI container
+            const container = document.createElement('div');
+            container.className = 'synthetic-sum-section';
+
+            // Label
+            const label = document.createElement('span');
+            label.className = 'synthetic-sum-label';
+            label.textContent = 'Create synthetic sum graph:';
+            container.appendChild(label);
+
+            // Disk multi-select
+            const diskSelect = document.createElement('select');
+            diskSelect.className = 'synthetic-sum-select';
+            diskSelect.multiple = true;
+            diskSelect.size = Math.min(6, devices.length);
+            devices.forEach(device => {
+                const opt = document.createElement('option');
+                opt.value = device;
+                opt.textContent = device;
+                diskSelect.appendChild(opt);
+            });
+            container.appendChild(diskSelect);
+
+            // Metric single-select
+            const metricSelect = document.createElement('select');
+            metricSelect.className = 'synthetic-sum-select';
+            allMetrics.forEach(metric => {
+                const opt = document.createElement('option');
+                opt.value = metric;
+                opt.textContent = metric;
+                metricSelect.appendChild(opt);
+            });
+            container.appendChild(metricSelect);
+
+            // Date range selectors
+            const dateLabelFrom = document.createElement('span');
+            dateLabelFrom.className = 'synthetic-sum-date-label';
+            dateLabelFrom.textContent = 'From:';
+            container.appendChild(dateLabelFrom);
+            const dateFrom = document.createElement('select');
+            dateFrom.className = 'synthetic-sum-date-input';
+            allTimestamps.forEach(ts => {
+                const opt = document.createElement('option');
+                opt.value = ts;
+                opt.textContent = ts;
+                dateFrom.appendChild(opt);
+            });
+            container.appendChild(dateFrom);
+            const dateLabelTo = document.createElement('span');
+            dateLabelTo.className = 'synthetic-sum-date-label';
+            dateLabelTo.textContent = 'To:';
+            container.appendChild(dateLabelTo);
+            const dateTo = document.createElement('select');
+            dateTo.className = 'synthetic-sum-date-input';
+            allTimestamps.forEach(ts => {
+                const opt = document.createElement('option');
+                opt.value = ts;
+                opt.textContent = ts;
+                dateTo.appendChild(opt);
+            });
+            dateTo.selectedIndex = allTimestamps.length - 1;
+            container.appendChild(dateTo);
+
+            // Button
+            const btn = document.createElement('button');
+            btn.className = 'synthetic-sum-btn';
+            btn.textContent = 'Sum and Show';
+            btn.onclick = () => {
+                const selectedDisks = Array.from(diskSelect.selectedOptions).map(opt => opt.value);
+                const selectedMetric = metricSelect.value;
+                // Use global date range
+                const allTs = graphData[selectedDisks[0]][selectedMetric].series_data.timestamps;
+                let fromIdx = allTs.indexOf(globalDateRange.from);
+                let toIdx = allTs.indexOf(globalDateRange.to);
+                if (fromIdx === -1) fromIdx = 0;
+                if (toIdx === -1) toIdx = allTs.length - 1;
+                if (selectedDisks.length < 2) {
+                    alert('Select at least two disks.');
+                    return;
+                }
+                if (fromIdx > toIdx) {
+                    alert('Start date must be before end date.');
+                    return;
+                }
+                for (const d of selectedDisks) {
+                    if (!graphData[d][selectedMetric]) {
+                        alert(`Disk ${d} does not have metric ${selectedMetric}`);
+                        return;
+                    }
+                }
+                const timestamps = allTs.slice(fromIdx, toIdx + 1);
+                const sumValues = timestamps.map((ts, idx) => {
+                    let sum = 0;
+                    selectedDisks.forEach(device => {
+                        const deviceTsIdx = allTs.indexOf(ts);
+                        const val = graphData[device][selectedMetric].series_data.values[deviceTsIdx];
+                        sum += (typeof val === 'number' ? val : 0);
+                    });
+                    return sum;
+                });
+                const syntheticId = `d3-graph-container-sum-${selectedMetric}-${selectedDisks.join('_')}-${timestamps[0]}-${timestamps[timestamps.length-1]}`;
+                if (document.getElementById(syntheticId)) {
+                    alert('Synthetic sum graph for this metric/disks/date range already exists.');
+                    return;
+                }
+                const graphContainer = document.createElement('div');
+                graphContainer.className = 'graph-container';
+                graphContainer.id = syntheticId;
+                const titleElement = document.createElement('p');
+                titleElement.className = 'chart-title';
+                titleElement.textContent = `Synthetic sum of ${selectedMetric} for: ` + selectedDisks.join(', ') + ` (from ${timestamps[0]} to ${timestamps[timestamps.length-1]})`;
+                graphContainer.appendChild(titleElement);
+                const svgContainer = document.createElement('div');
+                svgContainer.className = 'd3-svg-container';
+                graphContainer.appendChild(svgContainer);
+                graphDisplayArea.appendChild(graphContainer);
+                drawD3Chart(
+                    svgContainer,
+                    { timestamps: timestamps, values: sumValues },
+                    titleElement.textContent,
+                    Math.max(...sumValues),
+                    selectedMetric + ' (sum)'
+                );
+            };
+            container.appendChild(btn);
+
+            section.appendChild(container);
+        }
+
+        function filterSeriesByGlobalDate(seriesData) {
+            if (!globalDateRange.from || !globalDateRange.to) return seriesData;
+            const fromIdx = seriesData.timestamps.indexOf(globalDateRange.from);
+            const toIdx = seriesData.timestamps.indexOf(globalDateRange.to);
+            if (fromIdx === -1 || toIdx === -1 || fromIdx > toIdx) return seriesData;
+            return {
+                timestamps: seriesData.timestamps.slice(fromIdx, toIdx + 1),
+                values: seriesData.values.slice(fromIdx, toIdx + 1)
+            };
+        }
+
+        function redrawAllGraphs() {
+            // Remove all graphs
+            document.querySelectorAll('.graph-container').forEach(el => el.remove());
+            // Redraw checked graphs
+            document.querySelectorAll('#metricCheckboxes input[type="checkbox"]').forEach(checkbox => {
+                if (checkbox.checked) {
+                    checkbox.dispatchEvent(new Event('change'));
+                }
+            });
+        }
+
+        initializeGlobalDateSection();
+        initializeBulkMetricSelectors();
+        initializeSyntheticSumSection();
         initializeMetricSelectors();
     </script>
 </body>
