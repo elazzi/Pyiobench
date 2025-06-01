@@ -237,8 +237,20 @@
                     }
                 });
             });
-            allTimestamps = Array.from(allTimestamps).sort();
-            if (allTimestamps.length === 0) return;
+            // Sort and create display map: ISO -> yyyy-mm-dd-hh-mm
+            let sortedTimestamps = Array.from(allTimestamps).sort();
+            let displayMap = {};
+            sortedTimestamps.forEach(ts => {
+                const d = new Date(ts);
+                if (!isNaN(d)) {
+                    const yyyy = d.getFullYear();
+                    const mm = String(d.getMonth() + 1).padStart(2, '0');
+                    const dd = String(d.getDate()).padStart(2, '0');
+                    const hh = String(d.getHours()).padStart(2, '0');
+                    const min = String(d.getMinutes()).padStart(2, '0');
+                    displayMap[ts] = `${yyyy}-${mm}-${dd}-${hh}-${min}`;
+                }
+            });
             // UI
             const container = document.createElement('div');
             container.className = 'global-date-section';
@@ -248,10 +260,10 @@
             container.appendChild(label);
             const dateFrom = document.createElement('select');
             dateFrom.className = 'global-date-input';
-            allTimestamps.forEach(ts => {
+            sortedTimestamps.forEach(ts => {
                 const opt = document.createElement('option');
                 opt.value = ts;
-                opt.textContent = ts;
+                opt.textContent = displayMap[ts];
                 dateFrom.appendChild(opt);
             });
             container.appendChild(dateFrom);
@@ -261,33 +273,43 @@
             container.appendChild(labelTo);
             const dateTo = document.createElement('select');
             dateTo.className = 'global-date-input';
-            allTimestamps.forEach(ts => {
-                const opt = document.createElement('option');
-                opt.value = ts;
-                opt.textContent = ts;
-                dateTo.appendChild(opt);
-            });
-            dateTo.selectedIndex = allTimestamps.length - 1;
+            // Only show to-dates >= from-date
+            function updateToOptions() {
+                const fromIdx = dateFrom.selectedIndex;
+                dateTo.innerHTML = '';
+                for (let i = fromIdx; i < sortedTimestamps.length; ++i) {
+                    const ts = sortedTimestamps[i];
+                    const opt = document.createElement('option');
+                    opt.value = ts;
+                    opt.textContent = displayMap[ts];
+                    dateTo.appendChild(opt);
+                }
+                if (dateTo.options.length > 0) {
+                    dateTo.selectedIndex = dateTo.options.length - 1;
+                }
+            }
+            dateFrom.onchange = function() {
+                updateToOptions();
+                updateGlobalRange();
+            };
+            dateTo.onchange = updateGlobalRange;
             container.appendChild(dateTo);
             // Save and trigger global range
             function updateGlobalRange() {
                 const fromIdx = dateFrom.selectedIndex;
-                const toIdx = dateTo.selectedIndex;
+                const toIdx = fromIdx + dateTo.selectedIndex;
                 if (fromIdx > toIdx) {
                     alert('Start date must be before end date.');
                     return;
                 }
-                globalDateRange.from = dateFrom.value;
-                globalDateRange.to = dateTo.value;
-                // Redraw all graphs
+                globalDateRange.from = sortedTimestamps[fromIdx];
+                globalDateRange.to = sortedTimestamps[toIdx];
                 redrawAllGraphs();
             }
-            dateFrom.onchange = updateGlobalRange;
-            dateTo.onchange = updateGlobalRange;
             section.appendChild(container);
             // Set initial range
-            globalDateRange.from = dateFrom.value;
-            globalDateRange.to = dateTo.value;
+            updateToOptions();
+            updateGlobalRange();
         }
 
         function initializeBulkMetricSelectors() {
@@ -366,58 +388,6 @@
                     }
                 };
                 group.appendChild(btnThreshold);
-
-                // Synthetic graph button
-                const btnSynthetic = document.createElement('button');
-                btnSynthetic.textContent = 'Sum selected';
-                btnSynthetic.className = 'bulk-select-btn';
-                btnSynthetic.onclick = () => {
-                    // Find all checked checkboxes for this metric
-                    const selectedDevices = devices.filter(device => {
-                        const checkbox = document.getElementById(`checkbox-${device}-${metric}`);
-                        return checkbox && checkbox.checked;
-                    });
-                    if (selectedDevices.length < 2) {
-                        alert('Select at least two disks for summation.');
-                        return;
-                    }
-                    // Build synthetic data
-                    const timestamps = graphData[selectedDevices[0]][metric].series_data.timestamps;
-                    const sumValues = timestamps.map((ts, idx) => {
-                        let sum = 0;
-                        selectedDevices.forEach(device => {
-                            const val = graphData[device][metric].series_data.values[idx];
-                            sum += (typeof val === 'number' ? val : 0);
-                        });
-                        return sum;
-                    });
-                    // Create synthetic chart container
-                    const syntheticId = `d3-graph-container-sum-${metric}`;
-                    if (document.getElementById(syntheticId)) {
-                        alert('Synthetic sum graph for this metric already exists.');
-                        return;
-                    }
-                    const graphContainer = document.createElement('div');
-                    graphContainer.className = 'graph-container';
-                    graphContainer.id = syntheticId;
-                    const titleElement = document.createElement('p');
-                    titleElement.className = 'chart-title';
-                    titleElement.textContent = `Synthetic sum of ${metric} for: ` + selectedDevices.join(', ');
-                    graphContainer.appendChild(titleElement);
-                    const svgContainer = document.createElement('div');
-                    svgContainer.className = 'd3-svg-container';
-                    graphContainer.appendChild(svgContainer);
-                    graphDisplayArea.appendChild(graphContainer);
-                    // Draw chart
-                    drawD3Chart(
-                        svgContainer,
-                        { timestamps: timestamps, values: sumValues },
-                        titleElement.textContent,
-                        Math.max(...sumValues),
-                        metric + ' (sum)'
-                    );
-                };
-                group.appendChild(btnSynthetic);
 
                 bulkMetricSelectorsContainer.appendChild(group);
             });
@@ -626,36 +596,17 @@
             section.innerHTML = '';
             const devices = Object.keys(graphData);
             if (devices.length === 0) return;
-            // Build metric list (intersection of all metrics for simplicity)
             let allMetrics = new Set();
             devices.forEach(device => {
                 Object.keys(graphData[device]).forEach(metric => allMetrics.add(metric));
             });
             allMetrics = Array.from(allMetrics);
-
-            // Get all available timestamps (ISO format) from all devices/metrics
-            let allTimestamps = new Set();
-            devices.forEach(device => {
-                Object.values(graphData[device]).forEach(metricObj => {
-                    if (metricObj && metricObj.series_data && Array.isArray(metricObj.series_data.timestamps)) {
-                        metricObj.series_data.timestamps.forEach(ts => allTimestamps.add(ts));
-                    }
-                });
-            });
-            allTimestamps = Array.from(allTimestamps).sort();
-            if (allTimestamps.length === 0) return;
-
-            // UI container
             const container = document.createElement('div');
             container.className = 'synthetic-sum-section';
-
-            // Label
             const label = document.createElement('span');
             label.className = 'synthetic-sum-label';
             label.textContent = 'Create synthetic sum graph:';
             container.appendChild(label);
-
-            // Disk multi-select
             const diskSelect = document.createElement('select');
             diskSelect.className = 'synthetic-sum-select';
             diskSelect.multiple = true;
@@ -667,8 +618,6 @@
                 diskSelect.appendChild(opt);
             });
             container.appendChild(diskSelect);
-
-            // Metric single-select
             const metricSelect = document.createElement('select');
             metricSelect.className = 'synthetic-sum-select';
             allMetrics.forEach(metric => {
@@ -678,37 +627,6 @@
                 metricSelect.appendChild(opt);
             });
             container.appendChild(metricSelect);
-
-            // Date range selectors
-            const dateLabelFrom = document.createElement('span');
-            dateLabelFrom.className = 'synthetic-sum-date-label';
-            dateLabelFrom.textContent = 'From:';
-            container.appendChild(dateLabelFrom);
-            const dateFrom = document.createElement('select');
-            dateFrom.className = 'synthetic-sum-date-input';
-            allTimestamps.forEach(ts => {
-                const opt = document.createElement('option');
-                opt.value = ts;
-                opt.textContent = ts;
-                dateFrom.appendChild(opt);
-            });
-            container.appendChild(dateFrom);
-            const dateLabelTo = document.createElement('span');
-            dateLabelTo.className = 'synthetic-sum-date-label';
-            dateLabelTo.textContent = 'To:';
-            container.appendChild(dateLabelTo);
-            const dateTo = document.createElement('select');
-            dateTo.className = 'synthetic-sum-date-input';
-            allTimestamps.forEach(ts => {
-                const opt = document.createElement('option');
-                opt.value = ts;
-                opt.textContent = ts;
-                dateTo.appendChild(opt);
-            });
-            dateTo.selectedIndex = allTimestamps.length - 1;
-            container.appendChild(dateTo);
-
-            // Button
             const btn = document.createElement('button');
             btn.className = 'synthetic-sum-btn';
             btn.textContent = 'Sum and Show';
@@ -770,7 +688,6 @@
                 );
             };
             container.appendChild(btn);
-
             section.appendChild(container);
         }
 
