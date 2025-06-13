@@ -3,6 +3,7 @@ import sys
 import time
 import argparse
 import subprocess
+import random
 
 def human_size_to_bytes(size_str):
     """
@@ -30,36 +31,108 @@ DEFAULT_BLOCK_SIZES_BYTES = [s * 1024 for s in DEFAULT_BLOCK_SIZES_KB]
 def detect_filesystem_info(target_directory: str):
     """
     Detects filesystem type and block size for the given directory.
+    Supports Linux/macOS (using df/stat) and Windows (using ctypes).
     """
-    # Placeholder for actual detection logic
-    # This would typically involve calling subprocess.run with commands like 'df' and 'stat'
-    # For example:
-    # result = subprocess.run(['df', '-T', target_directory], capture_output=True, text=True)
-    # And then parsing the output.
-    # Similarly for block size using 'stat'.
-    try:
-        # Get filesystem type
-        df_process = subprocess.run(['df', '-T', target_directory], capture_output=True, text=True, check=True)
-        df_output = df_process.stdout.strip().split('\n')
-        if len(df_output) > 1:
-            fs_type = df_output[1].split()[1]
-        else:
-            fs_type = "Unknown"
+    if os.name == 'nt':
+        # Windows-specific implementation
+        try:
+            import ctypes
+            from ctypes import wintypes
 
-        # Get block size
-        stat_process = subprocess.run(['stat', '-f', '-c', '%s', target_directory], capture_output=True, text=True, check=True)
-        block_size = int(stat_process.stdout.strip())
+            fs_type_str = "Error"
+            block_size_val = "Error"
 
-        return {"type": fs_type, "block_size": block_size}
-    except FileNotFoundError as e:
-        print(f"Error: Required command ('df' or 'stat') not found. Please ensure you are on a Linux-like system and these commands are in your PATH. ({e})", file=sys.stderr)
-        return {"type": "Error", "block_size": "Error"}
-    except subprocess.CalledProcessError as e:
-        print(f"Error executing filesystem command: {e}", file=sys.stderr)
-        return {"type": "Error", "block_size": "Error"}
-    except Exception as e:
-        print(f"An unexpected error occurred while detecting filesystem info: {e}", file=sys.stderr)
-        return {"type": "Error", "block_size": "Error"}
+            # Adjust path for root drives (e.g., "C:" to "C:\\")
+            # GetDiskFreeSpaceW and GetVolumeInformationW require a trailing backslash for root paths.
+            adjusted_target_directory = target_directory
+            if len(target_directory) == 2 and target_directory[1] == ':': # e.g. "C:"
+                adjusted_target_directory = target_directory + "\\"
+            # For paths like "C:\mydir", it should already be fine.
+            # os.path.join(target_directory, '') might also work but direct manipulation is clearer here for root.
+
+
+            # Get Block Size
+            sectors_per_cluster = wintypes.DWORD()
+            bytes_per_sector = wintypes.DWORD()
+            number_of_free_clusters = wintypes.DWORD()
+            total_number_of_clusters = wintypes.DWORD()
+
+            success_disk_space = ctypes.windll.kernel32.GetDiskFreeSpaceW(
+                ctypes.c_wchar_p(adjusted_target_directory),
+                ctypes.byref(sectors_per_cluster),
+                ctypes.byref(bytes_per_sector),
+                ctypes.byref(number_of_free_clusters),
+                ctypes.byref(total_number_of_clusters)
+            )
+            if success_disk_space:
+                block_size_val = sectors_per_cluster.value * bytes_per_sector.value
+            else:
+                error_code = ctypes.get_last_error()
+                print(f"Windows API Error (GetDiskFreeSpaceW) for '{adjusted_target_directory}': {error_code}", file=sys.stderr)
+
+            # Get Filesystem Type
+            fs_name_buffer = ctypes.create_unicode_buffer(1024)
+            # Other parameters for GetVolumeInformationW that we don't necessarily need for fs_type
+            volume_name_buffer = ctypes.create_unicode_buffer(1024)
+            volume_serial_number = wintypes.DWORD()
+            maximum_component_length = wintypes.DWORD()
+            file_system_flags = wintypes.DWORD()
+
+            success_volume_info = ctypes.windll.kernel32.GetVolumeInformationW(
+                ctypes.c_wchar_p(adjusted_target_directory), # Path to the root of the volume
+                volume_name_buffer, ctypes.sizeof(volume_name_buffer),
+                ctypes.byref(volume_serial_number),
+                ctypes.byref(maximum_component_length),
+                ctypes.byref(file_system_flags),
+                fs_name_buffer, ctypes.sizeof(fs_name_buffer)
+            )
+            if success_volume_info:
+                fs_type_str = fs_name_buffer.value
+            else:
+                error_code = ctypes.get_last_error()
+                print(f"Windows API Error (GetVolumeInformationW) for '{adjusted_target_directory}': {error_code}", file=sys.stderr)
+                # fs_type_str remains "Error" if this fails
+
+            return {"type": fs_type_str, "block_size": block_size_val}
+
+        except ImportError:
+            print("Error: ctypes or wintypes module not found. Windows API calls cannot be made.", file=sys.stderr)
+            return {"type": "Error", "block_size": "Error"}
+        except AttributeError:
+            print("Error: `ctypes.windll.kernel32` not available. Ensure you are on a Windows system.", file=sys.stderr)
+            return {"type": "Error", "block_size": "Error"}
+        except Exception as e:
+            print(f"An unexpected error occurred during Windows filesystem info detection: {e}", file=sys.stderr)
+            return {"type": "Error", "block_size": "Error"}
+
+    else:
+        # Existing Linux/macOS implementation
+        try:
+            # Get filesystem type
+            df_process = subprocess.run(['df', '-T', target_directory], capture_output=True, text=True, check=True)
+            df_output = df_process.stdout.strip().split('\n')
+            if len(df_output) > 1:
+                fs_type = df_output[1].split()[1]
+            else:
+                fs_type = "Unknown"
+
+            # Get block size using stat on the directory itself
+            # For Linux, `stat -f -c %S target_directory` gives fundamental block size of the filesystem.
+            # `stat -c %B target_directory` gives the size in bytes of each block reported by `stat -c %b`.
+            # Let's use %S for fundamental block size.
+            stat_process = subprocess.run(['stat', '-f', '-c', '%S', target_directory], capture_output=True, text=True, check=True)
+            block_size = int(stat_process.stdout.strip())
+
+            return {"type": fs_type, "block_size": block_size}
+        except FileNotFoundError as e:
+            print(f"Error: Required command ('df' or 'stat') not found. Please ensure you are on a Linux-like system and these commands are in your PATH. ({e})", file=sys.stderr)
+            return {"type": "Error", "block_size": "Error"}
+        except subprocess.CalledProcessError as e:
+            print(f"Error executing filesystem command ('df' or 'stat'): {e}", file=sys.stderr)
+            return {"type": "Error", "block_size": "Error"}
+        except Exception as e:
+            print(f"An unexpected error occurred while detecting filesystem info on non-Windows OS: {e}", file=sys.stderr)
+            return {"type": "Error", "block_size": "Error"}
 
 def benchmark_sequential_writes(directory, file_size_str, duration_sec, block_size_bytes):
     """
@@ -165,9 +238,12 @@ Examples:
   %(prog)s -d /mnt/my_drive -s 2G -r 60
   %(prog)s --block_sizes 4k,16k,1M
   %(prog)s -d . -s 500M --duration 20 --block_sizes 8192,16384
+
+Note: Filesystem type and block size detection is supported on Linux, macOS, and Windows.
+      Full filesystem type details are typically more comprehensive on Linux/macOS.
 """
     parser = argparse.ArgumentParser(
-        description="A Python script to benchmark disk write performance for sequential and random writes, identifying optimal block sizes.",
+        description="A Python script to benchmark disk write performance (sequential and random) and identify optimal block sizes. Detects filesystem type and block size on Linux, macOS (via system commands), and Windows (via Windows API).",
         formatter_class=argparse.RawDescriptionHelpFormatter, # To ensure epilog formatting is preserved
         epilog=epilog
     )
@@ -203,7 +279,7 @@ def print_results(fs_info, all_seq_results, all_rand_results, best_seq_result, b
     # print_detailed_results = True # Or make this a command line arg
     # if print_detailed_results:
     print("\n--- Detailed Results per Block Size ---")
-    
+
     print("\nSequential Write Tests:")
     if all_seq_results:
         for bs, result in sorted(all_seq_results.items()):
@@ -247,28 +323,8 @@ def print_results(fs_info, all_seq_results, all_rand_results, best_seq_result, b
         print(f"  Total Data Written: {best_rand_result.get('bytes_written',0) / (1024**2):.2f} MB in {best_rand_result.get('time_taken',0):.2f}s")
     else:
         print("Random write tests did not yield a best performer (or all failed).")
-                
+
     print("\n--- End of Summary ---")
-
-# The main function already calls detect_filesystem_info(args.directory)
-# so no change is needed there based on the current file content.
-# The print_results function had some inconsistencies in parameter names in the prompt vs. code,
-# I've used the names from the prompt (best_seq_result, best_rand_result) and adjusted the calls.
-# Also, made results fetching safer with .get() and default values.
-        print(f"  Write Speed: {seq_results['speed_mbps']:.2f} MB/s")
-        print(f"  IOPS: {seq_results['iops']:.2f} operations/sec")
-    else:
-        print("  No results for sequential write test (an error may have occurred).")
-
-    print("\nRandom Write Test:")
-    if rand_results:
-        print(f"  Total Data Written: {rand_results['bytes_written'] / (1024**2):.2f} MB")
-        print(f"  Time Taken: {rand_results['time_taken']:.2f} s")
-        print(f"  Write Speed: {rand_results['speed_mbps']:.2f} MB/s")
-        print(f"  IOPS: {rand_results['iops']:.2f} operations/sec")
-    else:
-        print("  No results for random write test (an error may have occurred).")
-    print("--- End of Summary ---")
 
 def main():
     """
@@ -305,7 +361,7 @@ def main():
         if native_block_size and native_block_size not in test_block_sizes:
             test_block_sizes.append(native_block_size)
             test_block_sizes.sort()
-    
+
     print(f"Target directory: {abs_directory_path}") # Use absolute path
     print(f"Test file size: {args.size}")
     print(f"Test duration per run: {args.duration}s")
@@ -319,7 +375,7 @@ def main():
 
     all_sequential_results = {}
     all_random_results = {}
-    
+
     best_seq_result = None
     best_rand_result = None
 
@@ -358,7 +414,7 @@ def main():
         except Exception as e:
             print(f"Error during random write test with block size {current_block_size_kb}K: {e}", file=sys.stderr)
             all_random_results[block_size_bytes_iter] = {"error": str(e), "speed_mbps": 0, "iops": 0}
-            
+
     print_results(filesystem_info, all_sequential_results, all_random_results, best_seq_result, best_rand_result, args)
 
 if __name__ == "__main__":
