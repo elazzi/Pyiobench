@@ -94,14 +94,13 @@ def set_current_thread_affinity(cpu_index: int) -> bool:
 
             kernel32 = ctypes.windll.kernel32
 
-            # Ensure DWORD_PTR is defined (it's ULONG_PTR which is c_size_t)
-            if not hasattr(wintypes, 'DWORD_PTR'):
-                wintypes.DWORD_PTR = ctypes.c_size_t
+            # Define DWORD_PTR as ctypes.c_size_t (ULONG_PTR equivalent)
+            DWORD_PTR = ctypes.c_size_t
 
             # Define argtypes and restype for SetThreadAffinityMask and GetCurrentThread
             kernel32.GetCurrentThread.restype = wintypes.HANDLE
-            kernel32.SetThreadAffinityMask.argtypes = [wintypes.HANDLE, wintypes.DWORD_PTR]
-            kernel32.SetThreadAffinityMask.restype = wintypes.DWORD_PTR # Returns previous mask
+            kernel32.SetThreadAffinityMask.argtypes = [wintypes.HANDLE, DWORD_PTR]
+            kernel32.SetThreadAffinityMask.restype = DWORD_PTR # Returns previous mask
             kernel32.GetLastError.restype = wintypes.DWORD
 
             thread_handle = kernel32.GetCurrentThread()
@@ -110,7 +109,7 @@ def set_current_thread_affinity(cpu_index: int) -> bool:
                 return False
 
             affinity_mask_val = 1 << cpu_index
-            dw_affinity_mask = wintypes.DWORD_PTR(affinity_mask_val)
+            dw_affinity_mask = DWORD_PTR(affinity_mask_val)
 
             # Clear last error before calling API that uses it, to be safe
             kernel32.SetLastError(0)
@@ -141,7 +140,9 @@ def set_current_thread_affinity(cpu_index: int) -> bool:
         print(f"Thread {thread_id}: An unexpected error occurred while setting thread affinity for CPU {cpu_index}: {e}", file=sys.stderr)
         return False
 
-def benchmark_thread_target(cpu_index: int, benchmark_type: str, duration_sec: int, results_list: list):
+from typing import List, Tuple, Any
+
+def benchmark_thread_target(cpu_index: int, benchmark_type: str, duration_sec: int, results_list: List[Tuple[Any, ...]]):
     """
     Target function for benchmark threads. Sets affinity and runs a benchmark.
     """
@@ -169,7 +170,9 @@ def benchmark_thread_target(cpu_index: int, benchmark_type: str, duration_sec: i
     results_list.append((cpu_index, ops, benchmark_type))
 
 
-def get_core_info() -> dict:
+from typing import Dict, Union
+
+def get_core_info() -> Dict[str, Union[int, str]]:
     """
     Retrieves information about CPU cores using psutil.
     """
@@ -177,14 +180,17 @@ def get_core_info() -> dict:
         print("Warning: psutil module not found. Core information will be limited.", file=sys.stderr)
         # Fallback to os.cpu_count() if available, otherwise unknown
         num_logical_cores = os.cpu_count() if hasattr(os, 'cpu_count') else "Unknown"
+        if num_logical_cores is None:
+            num_logical_cores = "Unknown"
         return {
             "logical_cores": num_logical_cores,
             "physical_cores": "Unknown (psutil not available)"
         }
-
     num_logical_cores = psutil.cpu_count(logical=True)
     num_physical_cores = psutil.cpu_count(logical=False)
 
+    if num_logical_cores is None:
+        num_logical_cores = "Unknown"
     if num_physical_cores is None:
         print("Warning: Could not determine the number of physical cores. Using logical core count as fallback for physical cores.", file=sys.stderr)
         num_physical_cores = num_logical_cores
@@ -195,6 +201,7 @@ def get_core_info() -> dict:
         "logical_cores": num_logical_cores,
         "physical_cores": num_physical_cores
     }
+
 
 def run_integer_benchmark(duration_seconds: float) -> int:
     """
@@ -235,7 +242,7 @@ def run_integer_benchmark(duration_seconds: float) -> int:
         h = h_sum // h_divisor
         i = h & 0xFFFFFF          # 20. AND
         j = ~i                    # 21. Bitwise NOT """
-        a = a_val + operations # 1. Addition
+        a_val = a_val + b_val # 1. Addition
         operations += 3 # Total operations in this loop iteration
 
     return operations
@@ -281,11 +288,13 @@ def run_float_benchmark(duration_seconds: float) -> int:
         p = p_numerator / p_divisor_val # 19. Division
         q = math.atan2(p, u)        # 20. Arctangent2 """
         #loop_iter_float = float(operations // 20)
-        x_valx = x_val + y_val
+        x_val = x_val + y_val
         operations += 2 # Total operations in this loop iteration
 
     return operations
-def perform_individual_core_tests(core_info: dict, test_duration_sec: int, benchmark_to_run: str):
+from typing import Dict, Any
+
+def perform_individual_core_tests(core_info: Dict[str, Any], test_duration_sec: int, benchmark_to_run: str):
     """
     Performs integer and/or float benchmarks on each logical core individually.
     'benchmark_to_run' can be "all", "integer", or "float".
@@ -347,7 +356,7 @@ def perform_individual_core_tests(core_info: dict, test_duration_sec: int, bench
     print("--- Individual Core Performance Tests Finished ---")
 
 
-def main():
+def main_fixed():
     """
     Main function to orchestrate CPU benchmarks.
     """
@@ -367,8 +376,9 @@ def main():
         print("  Could not retrieve core information.")
     print("-----------------------------\n")
 
-    if isinstance(core_info.get("logical_cores"), int) and core_info["logical_cores"] > 0 :
-        perform_individual_core_tests(core_info, test_duration_per_core)
+    logical_cores = core_info.get("logical_cores")
+    if isinstance(logical_cores, int) and logical_cores > 0:
+        perform_individual_core_tests(core_info, test_duration_per_core, "all")
     else:
         print("Skipping individual core tests as valid core information is unavailable.", file=sys.stderr)
         print("Running benchmarks on unspecified core(s) as a fallback general test:")
@@ -389,7 +399,9 @@ def main():
 
 
 # --- Group Performance Tests ---
-def perform_group_test(core_info: dict, test_duration_sec: int, use_logical_cores: bool, benchmark_to_run: str):
+from typing import Dict, Any
+
+def perform_group_test(core_info: Dict[str, Any], test_duration_sec: int, use_logical_cores: bool, benchmark_to_run: str):
     """
     Performs integer and/or float benchmarks concurrently on a group of cores.
     'benchmark_to_run' can be "all", "integer", or "float".
@@ -412,7 +424,7 @@ def perform_group_test(core_info: dict, test_duration_sec: int, use_logical_core
         # --- Integer Operations Group Test ---
         print(f"\nStarting Integer tests for {group_name} ({num_cores_to_test} cores, {test_duration_sec}s each thread)...")
         results_int = []
-        threads_int = []
+        threads_int: list[threading.Thread] = []
         for i in range(num_cores_to_test):
             cpu_to_pin = i # Pins to logical cores 0..N-1
             thread = threading.Thread(target=benchmark_thread_target, args=(cpu_to_pin, "integer", test_duration_sec, results_int))
@@ -566,19 +578,19 @@ def main():
     """
     args = parse_cpu_arguments()
 
-    print(f"Starting CPU Benchmark Suite with arguments: {vars(args)}\n") # Using vars(args) for cleaner print
+    print(f"Starting CPU Benchmark Suite with arguments: {vars(args)}\n") 
 
     core_info = get_core_info()
     print("--- System Core Information ---")
-    if core_info:
-        print(f"  Logical cores detected: {core_info.get('logical_cores', 'N/A')}")
-        print(f"  Physical cores detected: {core_info.get('physical_cores', 'N/A')}")
-    else:
-        print("  Could not retrieve core information.")
-    print("-----------------------------\n")
+    
+    print(f"  Logical cores detected: {core_info.get('logical_cores', 'N/A')}")
+    print(f"  Physical cores detected: {core_info.get('physical_cores', 'N/A')}")
 
-    valid_logical_cores = isinstance(core_info.get("logical_cores"), int) and core_info["logical_cores"] > 0
-    valid_physical_cores = isinstance(core_info.get("physical_cores"), int) and core_info["physical_cores"] > 0
+
+    logical_cores_value = core_info.get("logical_cores", 0)
+    valid_logical_cores = isinstance(logical_cores_value, int) and logical_cores_value > 0
+    physical_cores_value = core_info.get("physical_cores", 0)
+    valid_physical_cores = isinstance(physical_cores_value, int) and physical_cores_value > 0
 
     # Determine if any test mode involving cores is selected
     core_tests_selected = args.run_mode in ["all", "individual", "physical", "logical"]
@@ -628,28 +640,6 @@ def main():
     tests_actually_run_count = 0
     if (args.run_mode == "all" or args.run_mode == "individual") and valid_logical_cores: tests_actually_run_count+=1
     if (args.run_mode == "all" or args.run_mode == "physical") and (valid_physical_cores or (valid_logical_cores and not valid_physical_cores)): tests_actually_run_count+=1 # counts physical or its logical fallback
-    # counting logical group test is tricky due to redundancy skips
-    # A simpler check: if no tests were dispatched above and some core-based mode was intended.
-
-    """     # Simplified Fallback: If 'all' modes were intended but logical cores are bad, then nothing ran.
-    if not valid_logical_cores and args.run_mode != "none": # (assuming "none" is not a choice yet)
-        print("\nWarning: No specific core-based tests could be run due to unavailable core information.", file=sys.stderr)
-        print("Running general fallback benchmarks (unpinned):")
-
-        fallback_duration = args.duration_individual # Use individual duration as a fallback
-        if args.test_type == "all" or args.test_type == "integer":
-            print(f"  Running integer benchmark (fallback) for {fallback_duration}s...")
-            int_ops = run_integer_benchmark(fallback_duration)
-            int_ops_per_sec = int_ops / fallback_duration if fallback_duration > 0 else 0
-            print(f"  Integer Ops/sec (fallback): {int_ops_per_sec:,.2f}")
-
-        if args.test_type == "all" or args.test_type == "float":
-            print(f"  Running float benchmark (fallback) for {fallback_duration}s...")
-            float_ops = run_float_benchmark(fallback_duration)
-            float_ops_per_sec = float_ops / fallback_duration if fallback_duration > 0 else 0
-            print(f"  Float Ops/sec (fallback): {float_ops_per_sec:,.2f}")
-    """
-
     print("\nCPU Benchmark Suite Finished.")
 
 
