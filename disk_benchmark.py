@@ -358,7 +358,7 @@ def main():
             sys.exit(1)
     else:
         test_block_sizes = list(DEFAULT_BLOCK_SIZES_BYTES) # Use a copy
-        if native_block_size and native_block_size not in test_block_sizes:
+        if isinstance(native_block_size, int) and native_block_size not in test_block_sizes:
             test_block_sizes.append(native_block_size)
             test_block_sizes.sort()
 
@@ -366,7 +366,10 @@ def main():
     print(f"Test file size: {args.size}")
     print(f"Test duration per run: {args.duration}s")
     if native_block_size:
-        print(f"Native filesystem block size: {native_block_size // 1024}K ({native_block_size} bytes)")
+        if isinstance(native_block_size, int):
+            print(f"Native filesystem block size: {native_block_size // 1024}K ({native_block_size} bytes)")
+        else:
+            print(f"Native filesystem block size: {native_block_size}")
     else:
         print(f"Native filesystem block size: Could not be determined.")
     print(f"Testing with block sizes (bytes): {test_block_sizes}")

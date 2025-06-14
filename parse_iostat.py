@@ -165,7 +165,7 @@ def _parse_block(timestamp_str: str, block_content: str) -> list[dict]:
                 valid_metric_found = True
             except ValueError:
                 # If conversion to float fails, log a warning and use 0.0 as a default.
-                print(f"Warning: Could not convert value '{metric_value_str}' to float for metric '{metric_key}' on device '{device_name}'. Using 0.0 instead. Line: '{line}'")
+                print(f"Warning: Could not convert value  to float for metric '{metric_key}' on device '{device_name}'. Using 0.0 instead. Line: '{line}'")
                 device_metrics[metric_key] = 0.0
             except IndexError:
                 # If a value is missing for a header, log a warning and use 0.0.
@@ -420,7 +420,7 @@ def generate_html_report(chart_data_list: list[dict], output_dir: str):
     # Inject the JSON data into the template
     html_content = html_template_content.replace('__GRAPH_DATA_JSON__', escaped_json_string)
 
-    report_path = os.path.join(output_dir, 'iostat_report2.html')
+    report_path = os.path.join(output_dir, 'iostat_report.html')
     try:
         with open(report_path, 'w') as f:
             f.write(html_content)
@@ -498,6 +498,9 @@ def main():
                 return
 
             print(f"Info: Proceeding with {len(iostat_df['Device'].unique())} device(s) and {len(iostat_df)} entries for report generation.")
+            # Ensure iostat_df is a DataFrame, not a Series
+            if isinstance(iostat_df, pd.Series):
+                iostat_df = iostat_df.to_frame().T
             chart_data = prepare_chart_data(iostat_df)
 
             if chart_data:
