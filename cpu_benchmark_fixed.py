@@ -645,22 +645,16 @@ def main():
     if (args.run_mode == "all" or args.run_mode == "physical") and (valid_physical_cores or (valid_logical_cores and not valid_physical_cores)): tests_actually_run_count+=1 # counts physical or its logical fallback
     print("\nCPU Benchmark Suite Finished.")
 
-    # Generate HTML report
-    if tests_actually_run_count > 0:
-        try:
-            report_path = generate_html_report(single_core_results, multi_core_results, core_info, TEST_CONFIG)
-            print(f"HTML report generated: {report_path}")
-        except Exception as e:
-            print(f"Error generating HTML report: {e}", file=sys.stderr)
+
 
 
 # Configuration for PassMark-like testing
 TEST_CONFIG = {
     'iterations': 3,           # Number of test iterations (PassMark runs multiple iterations)
-    'warmup_time': 5,         # Seconds to warm up the CPU before testing
-    'test_duration': 30,      # Seconds per test (PassMark uses 30-second tests)
+    'warmup_time': 8,         # Seconds to warm up the CPU before testing
+    'test_duration': 90,      # Seconds per test (PassMark uses 30-second tests)
     'cooldown_time': 2,       # Seconds to cool down between tests
-    'stabilization_time': 1,  # Seconds to wait for system to stabilize after affinity changes
+    'stabilization_time': 3,  # Seconds to wait for system to stabilize after affinity changes
 }
 
 def run_passmark_style_benchmark():
@@ -708,6 +702,9 @@ def run_passmark_style_benchmark():
         # Multi-core tests
         print("\nRunning multi-core tests...")
         num_cores = core_info.get('logical_cores', os.cpu_count() or 1)
+        # Ensure num_cores is an integer for range()
+        if not isinstance(num_cores, int) or num_cores <= 0:
+            num_cores = os.cpu_count() or 1
         
         threads_int = []
         threads_float = []
