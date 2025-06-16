@@ -1,4 +1,25 @@
-# iostat Parser and Graph Generator (`parse_iostat.py`)
+# Pyiobench - System Performance Benchmarking Suite
+
+This suite consists of tools for benchmarking and analyzing system performance, including disk I/O and CPU performance.
+
+## Components
+
+### 1. CPU Benchmark (`cpu_benchmark.py`)
+A tool for measuring CPU performance across different workloads:
+- Multi-threaded performance testing
+- Single-core performance evaluation
+- CPU stress testing with configurable load levels
+- Performance metrics collection and analysis
+
+### 2. Disk Benchmark (`disk_benchmark.py`)
+Evaluates storage device performance with:
+- Sequential read/write tests
+- Random access performance measurement
+- I/O operations per second (IOPS) testing
+- Block size impact analysis
+- Multi-threaded I/O testing
+
+### 3. iostat Parser and Graph Generator (`parse_iostat.py`)
 
 ## Script Overview
 
@@ -84,3 +105,44 @@ The report interface presents a list of all detected devices. Under each device 
 *   **Layout**: Charts are arranged in a responsive grid, making it easy to view multiple plots regardless of screen size. Each chart is displayed with its title, indicating the metric and device.
 
 This reactive interface allows you to dynamically explore the performance characteristics of your storage devices based on the parsed iostat data.
+
+## Using the CPU Benchmark
+
+Run the CPU benchmark with:
+```bash
+python cpu_benchmark.py [options]
+```
+
+### Options:
+- `--threads N`: Number of threads to use (default: number of CPU cores)
+- `--duration N`: Test duration in seconds (default: 60)
+- `--load N`: CPU load percentage (1-100, default: 100)
+
+### Output:
+- Detailed CPU performance metrics
+- Thread scaling efficiency
+- Core utilization statistics
+- Performance graphs (when used with parse_iostat.py)
+
+## Using the Disk Benchmark
+
+Run the disk benchmark with:
+```bash
+python disk_benchmark.py [options]
+```
+
+### Options:
+- `--device PATH`: Path to device or file to test
+- `--size N`: Size of test data in MB (default: 1024)
+- `--block-size N`: Block size in KB (default: 4)
+- `--mode {seq,random}`: Access pattern (default: seq)
+- `--operation {read,write,both}`: Test operation (default: both)
+
+### Output:
+- Throughput measurements (MB/s)
+- IOPS statistics
+- Latency metrics
+- Access pattern analysis
+- Performance graphs (when used with parse_iostat.py)
+
+## Using the iostat Parser
