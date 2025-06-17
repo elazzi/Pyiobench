@@ -18,6 +18,15 @@ REFERENCE_MULTI_INT_OPS = 30_000_000    # Base reference for multi-thread intege
 PASSMARK_BASE_SCORE = 2000.0  # Base score for reference system
 PASSMARK_SCALING_FACTOR = 1.5  # Non-linear scaling factor
 
+# Configuration for PassMark-like testing
+TEST_CONFIG = {
+    'iterations': 3,           # Number of test iterations (PassMark runs multiple iterations)
+    'warmup_time': 8,         # Seconds to warm up the CPU before testing
+    'test_duration': 90,      # Seconds per test (PassMark uses 30-second tests)
+    'cooldown_time': 2,       # Seconds to cool down between tests
+    'stabilization_time': 3,  # Seconds to wait for system to stabilize after affinity changes
+}
+
 try:
     import psutil
 except ImportError:
@@ -343,13 +352,22 @@ def perform_individual_core_tests(core_info: dict[str, Any], test_duration_sec: 
 # --- Group Performance Tests ---
 from typing import Dict, Any
 
-def perform_group_test(core_info: Dict[str, Any], test_duration_sec: int, use_logical_cores: bool, benchmark_to_run: str):
+def perform_group_test(core_info: Dict[str, Any], test_duration_sec: int, use_logical_cores: bool, benchmark_to_run: str) -> dict:
     """
     Performs integer and/or float benchmarks concurrently on a group of cores.
     'benchmark_to_run' can be "all", "integer", or "float".
+    Returns a dictionary with test results.
     """
     group_name = "All Logical Cores" if use_logical_cores else "All Physical Cores"
     print(f"\n==== {group_name} Performance Test (Duration: {test_duration_sec}s, Type: {benchmark_to_run}) ====")
+
+    results = {
+        'group_name': group_name,
+        'test_duration': test_duration_sec,
+        'test_type': benchmark_to_run,
+        'integer': {'successful_threads': 0, 'total_ops': 0, 'ops_per_sec_aggregate': 0, 'ops_per_sec_per_thread': 0},
+        'float': {'successful_threads': 0, 'total_ops': 0, 'ops_per_sec_aggregate': 0, 'ops_per_sec_per_thread': 0}
+    }
 
     if use_logical_cores:
         num_cores_to_test = core_info.get('logical_cores')
@@ -358,17 +376,17 @@ def perform_group_test(core_info: Dict[str, Any], test_duration_sec: int, use_lo
 
     if not isinstance(num_cores_to_test, int) or num_cores_to_test <= 0:
         print(f"Error: Valid number of cores for '{group_name}' not found ({num_cores_to_test}). Skipping this group test.", file=sys.stderr)
-        if psutil is None and use_logical_cores: # Physical core count often relies on psutil
+        if psutil is None and use_logical_cores:
              print("Info: psutil is not installed, which might be why core count is unavailable or limited.", file=sys.stderr)
-        return
+        return results
 
     if benchmark_to_run == "all" or benchmark_to_run == "integer":
         # --- Integer Operations Group Test ---
         print(f"\nStarting Integer tests for {group_name} ({num_cores_to_test} cores, {test_duration_sec}s each thread)...")
         results_int = []
-        threads_int: list[threading.Thread] = []
+        threads_int = []
         for i in range(num_cores_to_test):
-            cpu_to_pin = i # Pins to logical cores 0..N-1
+            cpu_to_pin = i
             thread = threading.Thread(target=benchmark_thread_target, args=(cpu_to_pin, "integer", test_duration_sec, results_int))
             threads_int.append(thread)
             thread.start()
@@ -380,20 +398,27 @@ def perform_group_test(core_info: Dict[str, Any], test_duration_sec: int, use_lo
         successful_int_threads = 0
         print(f"  Integer Test Results ({group_name}):")
         for res in results_int:
-            if len(res) == 4 and res[3] == "Affinity Error": # Error case
+            if len(res) == 4 and res[3] == "Affinity Error":
                 print(f"    CPU {res[0]}: Error - {res[3]}. Operations: {res[1]}")
-            elif len(res) == 3: # Success case
+            elif len(res) == 3:
                 ops_per_sec = res[1] / test_duration_sec if test_duration_sec > 0 else 0
-                #print(f"    CPU {res[0]}: {res[1]} ops ({ops_per_sec:,.2f} Ops/sec)")
                 total_int_ops += res[1]
-                successful_int_threads +=1
-            else: # Unknown error or format
+                successful_int_threads += 1
+            else:
                 print(f"    CPU {res[0]}: Malformed result - {res}")
 
-
-        if successful_int_threads > 0 :
+        if successful_int_threads > 0:
             avg_int_ops_per_sec_per_thread = (total_int_ops / successful_int_threads) / test_duration_sec if test_duration_sec > 0 else 0
             total_int_ops_per_sec_aggregate = total_int_ops / test_duration_sec if test_duration_sec > 0 else 0
+            
+            results['integer'] = {
+                'successful_threads': successful_int_threads,
+                'total_ops': total_int_ops,
+                'ops_per_sec_aggregate': total_int_ops_per_sec_aggregate,
+                'ops_per_sec_per_thread': avg_int_ops_per_sec_per_thread,
+                'normalized_score': get_normalized_scores(total_int_ops, test_duration_sec, True, False)['normalized_score']
+            }
+            
             print(f"  Total Integer Ops ({group_name}, {successful_int_threads} threads): {total_int_ops}")
             print(f"  Aggregate Integer Ops/sec ({group_name}): {total_int_ops_per_sec_aggregate:,.2f}")
             print(f"  Average Integer Ops/sec per thread ({group_name}): {avg_int_ops_per_sec_per_thread:,.2f}")
@@ -422,16 +447,23 @@ def perform_group_test(core_info: Dict[str, Any], test_duration_sec: int, use_lo
                 print(f"    CPU {res[0]}: Error - {res[3]}. Operations: {res[1]}")
             elif len(res) == 3:
                 ops_per_sec = res[1] / test_duration_sec if test_duration_sec > 0 else 0
-                #print(f"    CPU {res[0]}: {res[1]} ops ({ops_per_sec:,.2f} Ops/sec)")
                 total_float_ops += res[1]
-                successful_float_threads +=1
+                successful_float_threads += 1
             else:
-                 print(f"    CPU {res[0]}: Malformed result - {res}")
-
+                print(f"    CPU {res[0]}: Malformed result - {res}")
 
         if successful_float_threads > 0:
             avg_float_ops_per_sec_per_thread = (total_float_ops / successful_float_threads) / test_duration_sec if test_duration_sec > 0 else 0
             total_float_ops_per_sec_aggregate = total_float_ops / test_duration_sec if test_duration_sec > 0 else 0
+            
+            results['float'] = {
+                'successful_threads': successful_float_threads,
+                'total_ops': total_float_ops,
+                'ops_per_sec_aggregate': total_float_ops_per_sec_aggregate,
+                'ops_per_sec_per_thread': avg_float_ops_per_sec_per_thread,
+                'normalized_score': get_normalized_scores(total_float_ops, test_duration_sec, True, True)['normalized_score']
+            }
+            
             print(f"  Total Float Ops ({group_name}, {successful_float_threads} threads): {total_float_ops}")
             print(f"  Aggregate Float Ops/sec ({group_name}): {total_float_ops_per_sec_aggregate:,.2f}")
             print(f"  Average Float Ops/sec per thread ({group_name}): {avg_float_ops_per_sec_per_thread:,.2f}")
@@ -439,6 +471,7 @@ def perform_group_test(core_info: Dict[str, Any], test_duration_sec: int, use_lo
             print(f"  No successful float benchmark threads completed for {group_name}.")
 
     print(f"==== {group_name} Performance Test Finished ====")
+    return results
 
 
 def benchmark_thread_target(cpu_index: int, benchmark_type: str, duration_sec: int, results_list: List[Tuple[Any, ...]]):
@@ -589,33 +622,33 @@ def main():
     print(f"  Logical cores detected: {core_info.get('logical_cores', 'N/A')}")
     print(f"  Physical cores detected: {core_info.get('physical_cores', 'N/A')}")
 
-
     logical_cores_value = core_info.get("logical_cores", 0)
     valid_logical_cores = isinstance(logical_cores_value, int) and logical_cores_value > 0
     physical_cores_value = core_info.get("physical_cores", 0)
-    valid_physical_cores = isinstance(physical_cores_value, int) and physical_cores_value > 0
-
-    # Determine if any test mode involving cores is selected
+    valid_physical_cores = isinstance(physical_cores_value, int) and physical_cores_value > 0    # Determine if any test mode involving cores is selected
     core_tests_selected = args.run_mode in ["all", "individual", "physical", "logical"]
-
+    
     if core_tests_selected and not valid_logical_cores:
         print("Warning: Core-specific run modes selected, but valid logical core information is unavailable. Attempting fallback tests.", file=sys.stderr)
-    run_passmark_style_benchmark()
+
+    group_test_results = []  # Initialize list for group test results
+    run_passmark_style_benchmark(group_test_results)  # Run PassMark-style benchmark first
+
     if args.run_mode == "all" or args.run_mode == "individual":
         if valid_logical_cores:
             perform_individual_core_tests(core_info, args.duration_individual, args.test_type)
-        elif not core_tests_selected: # Only print if individual was the *only* mode or not part of 'all'
+        elif not core_tests_selected:
              print("Skipping individual core tests as valid logical core information is unavailable.", file=sys.stderr)
 
-
-    physical_group_test_run_as_logical_fallback = False
     if args.run_mode == "all" or args.run_mode == "physical":
         if valid_physical_cores:
-            perform_group_test(core_info, args.duration_group, use_logical_cores=False, benchmark_to_run=args.test_type)
-        elif valid_logical_cores : # Fallback to logical if physical count is bad but logical is good
+            result = perform_group_test(core_info, args.duration_group, use_logical_cores=False, benchmark_to_run=args.test_type)
+            group_test_results.append(result)
+        elif valid_logical_cores:
              print("\nWarning: Valid physical core count not available. Running 'All Physical Cores' test on all logical cores instead.", file=sys.stderr)
-             perform_group_test(core_info, args.duration_group, use_logical_cores=True, benchmark_to_run=args.test_type)
-             physical_group_test_run_as_logical_fallback = True # Mark that logical cores test was used for physical
+             result = perform_group_test(core_info, args.duration_group, use_logical_cores=True, benchmark_to_run=args.test_type)
+             group_test_results.append(result)
+             physical_group_test_run_as_logical_fallback = True
         elif not core_tests_selected:
             print("\nInfo: Valid physical core count not available. Skipping 'All Physical Cores' group test.", file=sys.stderr)
 
@@ -627,37 +660,256 @@ def main():
                  run_logical_group_test = False
             elif valid_physical_cores and core_info.get('physical_cores') == core_info.get('logical_cores'):
                  print("\nInfo: Physical core count is the same as logical core count. 'All Logical Cores' test results would be redundant with 'All Physical Cores' (if run). Skipping.")
-                 # This check might need refinement if 'physical' mode wasn't part of 'all'
-                 if not (args.run_mode == "all" or args.run_mode == "physical"): # If physical wasn't run, then logical is not redundant
-                     pass # Allow it
-                 else: # Physical was run or would have been
+                 if not (args.run_mode == "all" or args.run_mode == "physical"):
+                     # Run logical if physical wasn't run
+                     result = perform_group_test(core_info, args.duration_group, use_logical_cores=True, benchmark_to_run=args.test_type)
+                     group_test_results.append(result)
                      run_logical_group_test = False
-
-            if run_logical_group_test:
-                 perform_group_test(core_info, args.duration_group, use_logical_cores=True, benchmark_to_run=args.test_type)
+            elif run_logical_group_test:
+                 result = perform_group_test(core_info, args.duration_group, use_logical_cores=True, benchmark_to_run=args.test_type)
+                 group_test_results.append(result)
         elif not core_tests_selected:
             print("\nInfo: Valid logical core count not available. Skipping 'All Logical Cores' group test.", file=sys.stderr)
 
-    # Fallback for when no specific core tests are run due to unavailable core info OR if no valid run_mode was effectively chosen
-    # This condition needs to be more robust: e.g. if user chose 'individual' but logical_cores is bad.
-    tests_actually_run_count = 0
-    if (args.run_mode == "all" or args.run_mode == "individual") and valid_logical_cores: tests_actually_run_count+=1
-    if (args.run_mode == "all" or args.run_mode == "physical") and (valid_physical_cores or (valid_logical_cores and not valid_physical_cores)): tests_actually_run_count+=1 # counts physical or its logical fallback
     print("\nCPU Benchmark Suite Finished.")
 
+    # --- Results Formatting and Display ---
+    if group_test_results:
+        print("\n==== Group Test Results Summary ====")
+        for result in group_test_results:
+            group_name = result['group_name']
+            test_duration = result['test_duration']
+            
+            # Integer test results
+            int_data = result['integer']
+            int_successful_threads = int_data.get('successful_threads', 0)
+            int_ops_per_sec_aggregate = int_data.get('ops_per_sec_aggregate', 0)
+            int_ops_per_sec_per_thread = int_data.get('ops_per_sec_per_thread', 0)
+            int_normalized_score = int_data.get('normalized_score', 0)
+            
+            # Float test results
+            float_data = result['float']
+            float_successful_threads = float_data.get('successful_threads', 0)
+            float_ops_per_sec_aggregate = float_data.get('ops_per_sec_aggregate', 0)
+            float_ops_per_sec_per_thread = float_data.get('ops_per_sec_per_thread', 0)
+            float_normalized_score = float_data.get('normalized_score', 0)
+            
+            print(f"\n{group_name} - Duration: {test_duration}s")
+            print(f"  Integer: {int_successful_threads} threads, "
+                  f"Aggregate Ops/sec: {int_ops_per_sec_aggregate:,.2f}, "
+                  f"Ops/sec per Thread: {int_ops_per_sec_per_thread:,.2f}, "
+                  f"Normalized Score: {int_normalized_score:.0f}")
+            print(f"  Float: {float_successful_threads} threads, "
+                  f"Aggregate Ops/sec: {float_ops_per_sec_aggregate:,.2f}, "
+                  f"Ops/sec per Thread: {float_ops_per_sec_per_thread:,.2f}, "
+                  f"Normalized Score: {float_normalized_score:.0f}")
+        
+        # HTML Table Output
+        html_table = format_group_results_table(group_test_results)
+        print("\nHTML Table Format:")
+        print(html_table)
+    else:
+        print("No group test results to display.")
 
+def format_group_results_table(results):
+    """
+    Formats the group test results into an HTML table.
+    """
+    if not results:
+        return "<p>No group test results available.</p>"
+        
+    rows = []
+    for result in results:
+        group_name = result['group_name']
+        test_duration = result['test_duration']
+        
+        # Integer test results
+        int_data = result['integer']
+        int_row = f"""
+            <tr>
+                <td rowspan="2">{group_name}</td>
+                <td>Integer</td>
+                <td>{int_data.get('successful_threads', 0)}</td>
+                <td>{int_data.get('ops_per_sec_aggregate', 0):,.2f}</td>
+                <td>{int_data.get('ops_per_sec_per_thread', 0):,.2f}</td>
+                <td>{int_data.get('normalized_score', 0):,.0f}</td>
+            </tr>
+        """
+        
+        # Float test results
+        float_data = result['float']
+        float_row = f"""
+            <tr>
+                <td>Float</td>
+                <td>{float_data.get('successful_threads', 0)}</td>
+                <td>{float_data.get('ops_per_sec_aggregate', 0):,.2f}</td>
+                <td>{float_data.get('ops_per_sec_per_thread', 0):,.2f}</td>
+                <td>{float_data.get('normalized_score', 0):,.0f}</td>
+            </tr>
+        """
+        
+        rows.append(int_row + float_row)
+    
+    return f"""
+    <table>
+        <tr>
+            <th rowspan="2">Test Group</th>
+            <th rowspan="2">Type</th>
+            <th rowspan="2">Threads</th>
+            <th rowspan="2">Aggregate Ops/sec</th>
+            <th rowspan="2">Ops/sec per Thread</th>
+            <th rowspan="2">Normalized Score</th>
+        </tr>
+        <tr></tr>
+        {"".join(rows)}
+    </table>
+    """
+def generate_html_report(single_core_results, multi_core_results, group_test_results, core_info, config):
+    """
+    Generates an HTML report from the benchmark results.
+    """
+    with open('benchmark_template.html', 'r') as f:
+        template = f.read()
+    
+    # Format system information
+    system_info = f"""
+    <table>
+        <tr><th>CPU</th><td>{platform.processor()}</td></tr>
+        <tr><th>Physical Cores</th><td>{core_info.get('physical_cores', 'Unknown')}</td></tr>
+        <tr><th>Logical Cores</th><td>{core_info.get('logical_cores', 'Unknown')}</td></tr>
+        <tr><th>Operating System</th><td>{platform.system()} {platform.release()}</td></tr>
+        <tr><th>Python Version</th><td>{platform.python_version()}</td></tr>
+    </table>
+    """
 
+    # Format benchmark configuration
+    benchmark_config = f"""
+    <table>
+        <tr><th>Test Duration</th><td>{config['test_duration']} seconds</td></tr>
+        <tr><th>Number of Iterations</th><td>{config['iterations']}</td></tr>
+        <tr><th>Warmup Time</th><td>{config['warmup_time']} seconds</td></tr>
+    </table>
+    """
 
-# Configuration for PassMark-like testing
-TEST_CONFIG = {
-    'iterations': 3,           # Number of test iterations (PassMark runs multiple iterations)
-    'warmup_time': 8,         # Seconds to warm up the CPU before testing
-    'test_duration': 90,      # Seconds per test (PassMark uses 30-second tests)
-    'cooldown_time': 2,       # Seconds to cool down between tests
-    'stabilization_time': 3,  # Seconds to wait for system to stabilize after affinity changes
-}
+    # Format single-core and multi-core results using format_results_table
+    def format_results_table(results, is_single_core=True):
+        rows = []
+        for i, result in enumerate(results):
+            int_score = result['integer']['normalized_score']
+            float_score = result['float']['normalized_score']
+            rows.append(f"""
+                <tr>
+                    <td>Iteration {i + 1}</td>
+                    <td>{result['integer']['ops_per_sec']:,.2f}</td>
+                    <td>{int_score:,}</td>
+                    <td>{result['float']['ops_per_sec']:,.2f}</td>
+                    <td>{float_score:,}</td>
+                </tr>
+            """)
+        
+        avg_int = sum(r['integer']['normalized_score'] for r in results) / len(results)
+        avg_float = sum(r['float']['normalized_score'] for r in results) / len(results)
+        
+        rows.append(f"""
+            <tr style="font-weight: bold;">
+                <td>Average</td>
+                <td>-</td>
+                <td>{avg_int:,.0f}</td>
+                <td>-</td>
+                <td>{avg_float:,.0f}</td>
+            </tr>
+        """)
+        
+        return f"""
+        <table>
+            <tr>
+                <th>Run</th>
+                <th>Integer Ops/sec</th>
+                <th>Integer Score</th>
+                <th>Float Ops/sec</th>
+                <th>Float Score</th>
+            </tr>
+            {"".join(rows)}
+        </table>
+        """
 
-def run_passmark_style_benchmark():
+    # Calculate overall score
+    def avg_score(results, test_type):
+        return sum(r[test_type]['normalized_score'] for r in results) / len(results)
+
+    # Initialize all scores
+    scores = {
+        'single_core_int': avg_score(single_core_results, 'integer'),
+        'single_core_float': avg_score(single_core_results, 'float'),
+        'multi_core_int': avg_score(multi_core_results, 'integer'),
+        'multi_core_float': avg_score(multi_core_results, 'float')
+    }
+    
+    # Add group test scores if available
+    for result in group_test_results:
+        if 'integer' in result and 'normalized_score' in result['integer']:
+            scores[f"group_{result['group_name']}_int"] = result['integer']['normalized_score']
+        if 'float' in result and 'normalized_score' in result['float']:
+            scores[f"group_{result['group_name']}_float"] = result['float']['normalized_score']
+
+    # Calculate overall score (just using original weights for now)
+    overall_score = (
+        scores['single_core_int'] * 0.1 +
+        scores['single_core_float'] * 0.15 +
+        scores['multi_core_int'] * 0.3 +
+        scores['multi_core_float'] * 0.45
+    )
+
+    # Prepare chart data including group test results
+    chart_labels = ['Single-Core Integer', 'Single-Core Float', 'Multi-Core Integer', 'Multi-Core Float']
+    chart_values = [
+        scores['single_core_int'],
+        scores['single_core_float'],
+        scores['multi_core_int'],
+        scores['multi_core_float']
+    ]
+    
+    for result in group_test_results:
+        group_name = result['group_name']
+        if 'integer' in result and 'normalized_score' in result['integer']:
+            chart_labels.append(f"{group_name} Integer")
+            chart_values.append(result['integer']['normalized_score'])
+        if 'float' in result and 'normalized_score' in result['float']:
+            chart_labels.append(f"{group_name} Float")
+            chart_values.append(result['float']['normalized_score'])
+
+    chart_data = [
+        {
+            'x': chart_labels,
+            'y': chart_values,
+            'type': 'bar',
+            'name': 'Normalized Scores'
+        }
+    ]
+
+    # Fill in template
+    report = template.format(
+        timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        system_info=system_info,
+        benchmark_config=benchmark_config,
+        single_core_results=format_results_table(single_core_results, True),
+        multi_core_results=format_results_table(multi_core_results, False),
+        per_core_results="",  # Not used in current implementation
+        group_test_results=format_group_results_table(group_test_results),
+        final_score=f"<h3>{overall_score:,.0f}</h3>",
+        test_info=f"{config['iterations']} iterations, {config['test_duration']}s per test",
+        chart_data=json.dumps(chart_data)
+    )
+
+    # Save report
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    report_path = f'cpu_benchmark_report_{timestamp}.html'
+    with open(report_path, 'w') as f:
+        f.write(report)
+    
+    return report_path
+
+def run_passmark_style_benchmark(group_test_results=None):
     """
     Runs CPU benchmarks following PassMark's methodology:
     1. System warmup
@@ -665,6 +917,8 @@ def run_passmark_style_benchmark():
     3. Proper cool-down periods
     4. Both single and multi-core tests
     5. Averaged results
+    Args:
+        group_test_results: Optional list to store additional group test results in
     """
     print("\n=== Starting PassMark-style CPU Benchmark ===\n")
     
@@ -742,10 +996,8 @@ def run_passmark_style_benchmark():
         
         time.sleep(TEST_CONFIG['cooldown_time'])
     
-    # Calculate and display final scores    print("\n=== Generating Final Report ===")
-    
-    # Generate HTML report
-    report_path = generate_html_report(single_core_results, multi_core_results, core_info, TEST_CONFIG)
+    # Generate HTML report with group test results if available
+    report_path = generate_html_report(single_core_results, multi_core_results, group_test_results or [], core_info, TEST_CONFIG)
     print(f"\nDetailed HTML report has been generated: {report_path}")
     
     # Print summary to console
@@ -770,121 +1022,7 @@ def run_passmark_style_benchmark():
     print(f"\nOverall CPU Score: {overall_score:,.0f}")
     print(f"\nOpen {report_path} in your web browser for detailed results and charts.")
 
-def generate_html_report(single_core_results, multi_core_results, core_info, config):
-    """
-    Generates an HTML report from the benchmark results.
-    """
-    with open('benchmark_template.html', 'r') as f:
-        template = f.read()
-    
-    # Format system information
-    system_info = f"""
-    <table>
-        <tr><th>CPU</th><td>{platform.processor()}</td></tr>
-        <tr><th>Physical Cores</th><td>{core_info.get('physical_cores', 'Unknown')}</td></tr>
-        <tr><th>Logical Cores</th><td>{core_info.get('logical_cores', 'Unknown')}</td></tr>
-        <tr><th>Operating System</th><td>{platform.system()} {platform.release()}</td></tr>
-        <tr><th>Python Version</th><td>{platform.python_version()}</td></tr>
-    </table>
-    """
 
-    # Format benchmark configuration
-    benchmark_config = f"""
-    <table>
-        <tr><th>Test Duration</th><td>{config['test_duration']} seconds</td></tr>
-        <tr><th>Number of Iterations</th><td>{config['iterations']}</td></tr>
-        <tr><th>Warmup Time</th><td>{config['warmup_time']} seconds</td></tr>
-    </table>
-    """
-
-    # Format single-core results
-    def format_results_table(results, is_single_core=True):
-        rows = []
-        for i, result in enumerate(results):
-            int_score = result['integer']['normalized_score']
-            float_score = result['float']['normalized_score']
-            rows.append(f"""
-                <tr>
-                    <td>Iteration {i + 1}</td>
-                    <td>{result['integer']['ops_per_sec']:,.2f}</td>
-                    <td>{int_score:,}</td>
-                    <td>{result['float']['ops_per_sec']:,.2f}</td>
-                    <td>{float_score:,}</td>
-                </tr>
-            """)
-        
-        avg_int = sum(r['integer']['normalized_score'] for r in results) / len(results)
-        avg_float = sum(r['float']['normalized_score'] for r in results) / len(results)
-        
-        rows.append(f"""
-            <tr style="font-weight: bold;">
-                <td>Average</td>
-                <td>-</td>
-                <td>{avg_int:,.0f}</td>
-                <td>-</td>
-                <td>{avg_float:,.0f}</td>
-            </tr>
-        """)
-        
-        return f"""
-        <table>
-            <tr>
-                <th>Run</th>
-                <th>Integer Ops/sec</th>
-                <th>Integer Score</th>
-                <th>Float Ops/sec</th>
-                <th>Float Score</th>
-            </tr>
-            {"".join(rows)}
-        </table>
-        """
-
-    # Calculate overall score
-    def avg_score(results, test_type):
-        return sum(r[test_type]['normalized_score'] for r in results) / len(results)
-
-    overall_score = (
-        avg_score(single_core_results, 'integer') * 0.1 +
-        avg_score(single_core_results, 'float') * 0.15 +
-        avg_score(multi_core_results, 'integer') * 0.3 +
-        avg_score(multi_core_results, 'float') * 0.45
-    )
-
-    # Prepare chart data
-    chart_data = [
-        {
-            'x': ['Single-Core Integer', 'Single-Core Float', 'Multi-Core Integer', 'Multi-Core Float'],
-            'y': [
-                avg_score(single_core_results, 'integer'),
-                avg_score(single_core_results, 'float'),
-                avg_score(multi_core_results, 'integer'),
-                avg_score(multi_core_results, 'float')
-            ],
-            'type': 'bar',
-            'name': 'Normalized Scores'
-        }
-    ]
-
-    # Fill in template
-    report = template.format(
-        timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        system_info=system_info,
-        benchmark_config=benchmark_config,
-        single_core_results=format_results_table(single_core_results, True),
-        multi_core_results=format_results_table(multi_core_results, False),
-        per_core_results="",  # Add per-core results if needed
-        final_score=f"<h3>{overall_score:,.0f}</h3>",
-        test_info=f"{config['iterations']} iterations, {config['test_duration']}s per test",
-        chart_data=json.dumps(chart_data)
-    )
-
-    # Save report
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    report_path = f'cpu_benchmark_report_{timestamp}.html'
-    with open(report_path, 'w') as f:
-        f.write(report)
-    
-    return report_path
 
 if __name__ == "__main__":
     main()
