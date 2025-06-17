@@ -2,65 +2,39 @@ import time
 import math
 import os
 import sys
-
-# Reference system baselines (based on a mid-range system as reference point)
-# These values are from an Intel Core i5-12600K system
-REFERENCE_SINGLE_FLOAT_OPS = 2_500_000  # Base reference for single-thread float operations
-REFERENCE_MULTI_FLOAT_OPS = 25_000_000  # Base reference for multi-thread float operations
-REFERENCE_SINGLE_INT_OPS = 3_000_000    # Base reference for single-thread integer operations
-REFERENCE_MULTI_INT_OPS = 30_000_000    # Base reference for multi-thread integer operations
-
-# PassMark-like scoring constants
-PASSMARK_BASE_SCORE = 2000.0  # Base score for reference system
-PASSMARK_SCALING_FACTOR = 1.5  # Non-linear scaling factor
-
 try:
     import psutil
 except ImportError:
     print("Warning: psutil module not found. Some features like CPU affinity and detailed core info will be disabled.", file=sys.stderr)
-    psutil = None
+    psutil = None # Gracefully handle if psutil is not installed
 
+# Imports for threading, argparse will be used later
 import threading
 import argparse
 
-def normalize_score(raw_score: float, reference_score: float) -> float:
-    """
-    Normalizes a raw benchmark score against a reference system score.
-    Uses a non-linear scaling similar to PassMark's methodology.
-    """
-    if reference_score <= 0 or raw_score < 0:
-        return 0.0
-    
-    # Calculate the ratio of the raw score to reference score
-    ratio = raw_score / reference_score
-    
-    # Apply non-linear scaling (similar to PassMark's approach)
-    normalized = PASSMARK_BASE_SCORE * math.pow(ratio, PASSMARK_SCALING_FACTOR)
-    
-    # Round to nearest integer for cleaner display
-    return round(normalized)
 
-def get_normalized_scores(raw_ops: int, duration_sec: float, is_multicore: bool, is_float: bool) -> dict:
+def set_affinity(cpu_index: int) -> bool:
     """
-    Converts raw operations into normalized scores comparable to PassMark's system.
+    Sets CPU affinity for the current process to a specific core.
+    Returns True if successful, False otherwise.
     """
-    ops_per_sec = raw_ops / duration_sec if duration_sec > 0 else 0
-    
-    # Select appropriate reference baseline
-    if is_float:
-        reference = REFERENCE_MULTI_FLOAT_OPS if is_multicore else REFERENCE_SINGLE_FLOAT_OPS
-    else:
-        reference = REFERENCE_MULTI_INT_OPS if is_multicore else REFERENCE_SINGLE_INT_OPS
-    
-    # Calculate normalized score
-    norm_score = normalize_score(ops_per_sec, reference)
-    
-    return {
-        'raw_ops': raw_ops,
-        'ops_per_sec': ops_per_sec,
-        'normalized_score': norm_score,
-        'test_seconds': duration_sec
-    }
+    if not psutil:
+        print("Info: psutil not available, cannot set CPU affinity.", file=sys.stderr)
+        return False
+    try:
+        p = psutil.Process()
+        p.cpu_affinity([cpu_index])
+        # print(f"Affinity set to CPU {cpu_index}") # Can be verbose, enable if needed
+        return True
+    except psutil.AccessDenied:
+        print(f"Error: Access denied when setting affinity for CPU {cpu_index}.", file=sys.stderr)
+    except psutil.NoSuchProcess:
+        print("Error: Current process not found (should not happen).", file=sys.stderr)
+    except ValueError as e:
+        print(f"Error: Invalid CPU index {cpu_index} or system does not support affinity setting. ({e})", file=sys.stderr)
+    except Exception as e:
+        print(f"An unexpected error occurred while setting CPU affinity for CPU {cpu_index}: {e}", file=sys.stderr)
+    return False
 
 def reset_affinity() -> bool:
     """
@@ -167,28 +141,67 @@ def set_current_thread_affinity(cpu_index: int) -> bool:
         return False
 
 from typing import List, Tuple, Any
-def set_affinity(cpu_index: int) -> bool:
+
+def benchmark_thread_target(cpu_index: int, benchmark_type: str, duration_sec: int, results_list: List[Tuple[Any, ...]]):
     """
-    Sets CPU affinity for the current process to a specific core.
-    Returns True if successful, False otherwise.
+    Target function for benchmark threads. Sets affinity and runs a benchmark.
+    """
+    if not set_current_thread_affinity(cpu_index):
+        print(f"Thread for CPU {cpu_index} ({benchmark_type}): Failed to set thread affinity. Test may not be accurate.", file=sys.stderr)
+        # Proceed with benchmark anyway, but it won't be pinned.
+        # Alternatively, one could append an error and return. For now, run it unpinned.
+        # results_list.append((cpu_index, 0, benchmark_type, "Affinity Error"))
+        # return
+
+    # Short delay to allow affinity to potentially take effect if there are OS scheduling latencies.
+    # This is speculative and might not be necessary or effective on all OSes.
+    time.sleep(0.01)
+
+
+    ops = 0
+    if benchmark_type == "integer":
+        ops = run_integer_benchmark(duration_sec)
+    elif benchmark_type == "float":
+        ops = run_float_benchmark(duration_sec)
+    else:
+        results_list.append((cpu_index, 0, benchmark_type, "Unknown Benchmark Type"))
+        return
+
+    results_list.append((cpu_index, ops, benchmark_type))
+
+
+from typing import Dict, Union
+
+def get_core_info() -> Dict[str, Union[int, str]]:
+    """
+    Retrieves information about CPU cores using psutil.
     """
     if not psutil:
-        print("Info: psutil not available, cannot set CPU affinity.", file=sys.stderr)
-        return False
-    try:
-        p = psutil.Process()
-        p.cpu_affinity([cpu_index])
-        # print(f"Affinity set to CPU {cpu_index}") # Can be verbose, enable if needed
-        return True
-    except psutil.AccessDenied:
-        print(f"Error: Access denied when setting affinity for CPU {cpu_index}.", file=sys.stderr)
-    except psutil.NoSuchProcess:
-        print("Error: Current process not found (should not happen).", file=sys.stderr)
-    except ValueError as e:
-        print(f"Error: Invalid CPU index {cpu_index} or system does not support affinity setting. ({e})", file=sys.stderr)
-    except Exception as e:
-        print(f"An unexpected error occurred while setting CPU affinity for CPU {cpu_index}: {e}", file=sys.stderr)
-    return False
+        print("Warning: psutil module not found. Core information will be limited.", file=sys.stderr)
+        # Fallback to os.cpu_count() if available, otherwise unknown
+        num_logical_cores = os.cpu_count() if hasattr(os, 'cpu_count') else "Unknown"
+        if num_logical_cores is None:
+            num_logical_cores = "Unknown"
+        return {
+            "logical_cores": num_logical_cores,
+            "physical_cores": "Unknown (psutil not available)"
+        }
+    num_logical_cores = psutil.cpu_count(logical=True)
+    num_physical_cores = psutil.cpu_count(logical=False)
+
+    if num_logical_cores is None:
+        num_logical_cores = "Unknown"
+    if num_physical_cores is None:
+        print("Warning: Could not determine the number of physical cores. Using logical core count as fallback for physical cores.", file=sys.stderr)
+        num_physical_cores = num_logical_cores
+        # Alternatively, could be set to "Unknown" or some other indicator.
+        # For now, assuming logical as a fallback is a common approach if detailed SMT info isn't critical.
+
+    return {
+        "logical_cores": num_logical_cores,
+        "physical_cores": num_physical_cores
+    }
+
 
 def run_integer_benchmark(duration_seconds: float) -> int:
     """
@@ -197,82 +210,91 @@ def run_integer_benchmark(duration_seconds: float) -> int:
     operations = 0
     start_time = time.monotonic()
 
-    # Initial values
+    # Initial values, these assignments are not counted in ops
     a_val = 1234567890
     b_val = 9876543210
 
     while time.monotonic() - start_time < duration_seconds:
-        a_val = a_val + b_val  # Addition
-        operations += 3  # Count operations in loop
+        # Use local variables for calculations within the loop to avoid large numbers in 'operations' affecting logic
+        # The 'operations' variable itself is just a counter for benchmarked ops.
+        # We use a simple incrementing value for variety in calculations.
+        """ loop_iter_val = operations // 20 # Roughly, to keep it small and changing
+
+        a = a_val + loop_iter_val # 1. Addition
+        b = b_val - loop_iter_val # 2. Subtraction
+        c = a * b                 # 3. Multiplication
+        # Ensure d_divisor is not zero; (operations + 1) is safe as operations >= 0
+        d_divisor = loop_iter_val + 1 # 4. Addition
+        d = c // d_divisor        # 5. Integer Division
+
+        # Bitwise operations
+        shift_amount = (loop_iter_val % 4) + 1 # 6. Modulo, 7. Addition
+        e = a << shift_amount # 8. Left Shift
+        f = b >> shift_amount # 9. Right Shift
+        g = e ^ f             # 10. XOR
+
+        # Some more arbitrary operations to increase workload
+        # (a + b + c + d + e + f + g) -> 6 additions (11-16)
+        # (loop_iter_val % 10 + 1) -> 1 modulo, 1 addition (17-18)
+        # ... // ... -> 1 integer division (19)
+        h_sum = a + b + c + d + e + f + g
+        h_divisor = (loop_iter_val % 10) + 1
+        h = h_sum // h_divisor
+        i = h & 0xFFFFFF          # 20. AND
+        j = ~i                    # 21. Bitwise NOT """
+        a_val = a_val + b_val # 1. Addition
+        operations += 3 # Total operations in this loop iteration
 
     return operations
 
 def run_float_benchmark(duration_seconds: float) -> int:
     """
     Runs a synthetic CPU benchmark focused on floating-point operations.
-    Designed to produce results comparable to PassMark's CPUBenchmark.net FPU score.
     """
     operations = 0
     start_time = time.monotonic()
 
-    # Constants for transcendental functions
-    PI = 3.14159265358979323846
-    E = 2.71828182845904523536
-
-    # Initial values for matrix operations
-    matrix = [[1.0, 2.0, 3.0, 4.0],
-              [5.0, 6.0, 7.0, 8.0],
-              [9.0, 10.0, 11.0, 12.0],
-              [13.0, 14.0, 15.0, 16.0]]
-    
-    vector = [1.0, 2.0, 3.0, 4.0]
+    # Initial values, these assignments are not counted in ops
+    x_val = 123.456789
+    y_val = 987.654321
 
     while time.monotonic() - start_time < duration_seconds:
-        # Matrix operations
-        for i in range(4):
-            result = 0.0
-            for j in range(4):
-                result += matrix[i][j] * vector[j]
-            vector[i] = result
-            operations += 8  # 4 multiplications and 4 additions per row
+        # Use a scaled version of a simple increment for variety in float calculations
+        """loop_iter_float = float(operations // 20) # (integer division, float conversion, float division) - these are setup, not counted in the 20 ops below
 
-        # Transcendental functions
-        x = vector[0] * PI / 180.0
-        y = vector[1] * E
+        x = x_val + loop_iter_float # 1. Addition
+        y = y_val - loop_iter_float # 2. Subtraction
+
+        z = x * y                   # 3. Multiplication
+        # Ensure w_divisor is not zero
+        w_divisor_val = loop_iter_float + 0.000001 # 4. Addition
+        w = z / w_divisor_val       # 5. Division
+
+        # Math functions
+        # Use abs to ensure sqrt input is non-negative, though w could be negative
+        abs_w = abs(w)              # 6. Absolute value
+        sqrt_arg = abs_w + 0.000001 # 7. Addition
+        u = math.sqrt(sqrt_arg)     # 8. Square root
         
-        # Trigonometric operations
-        sin_x = math.sin(x)
-        cos_x = math.cos(x)
-        tan_x = math.tan(x)
-        operations += 3
+        sin_x = math.sin(x)         # 9. Sine
+        cos_y = math.cos(y)         # 10. Cosine
+        v = sin_x + cos_y           # 11. Addition
 
-        # Exponential and logarithmic operations
-        exp_y = math.exp(y % 10)
-        log_y = math.log(abs(y) + 1.0)
-        log10_y = math.log10(abs(y) + 1.0)
-        operations += 3
-
-        # Power and root operations
-        sqrt_val = math.sqrt(abs(sin_x * cos_x) + 1.0)
-        pow_val = math.pow(abs(tan_x) + 1.0, log_y + 1.0)
-        operations += 2
-
-        # FFT-like operations
-        for i in range(4):
-            real = vector[i] * cos_x
-            imag = vector[i] * sin_x
-            vector[i] = math.sqrt(real * real + imag * imag)
-            operations += 5
-
-        # Update matrix values
-        for i in range(4):
-            for j in range(4):
-                matrix[i][j] = (matrix[i][j] * exp_y + vector[j]) % 100.0
-                operations += 3
+        # Some more arbitrary operations
+        # (x + y + z + w + u + v) -> 5 additions (12-16)
+        p_numerator = x + y + z + w + u + v
+        # (float(loop_iter_val_int % 100) + 0.001) -> 1 int modulo, (float conv - setup), 1 float addition (17-18)
+        p_divisor_val = float((operations // 20) % 100) + 0.001 # loop_iter_val_int for modulo
+        p = p_numerator / p_divisor_val # 19. Division
+        q = math.atan2(p, u)        # 20. Arctangent2 """
+        #loop_iter_float = float(operations // 20)
+        x_val = x_val + y_val
+        operations += 2 # Total operations in this loop iteration
 
     return operations
+from typing import Dict, Any
 
-def perform_individual_core_tests(core_info: dict[str, Any], test_duration_sec: int, benchmark_to_run: str):
+def perform_individual_core_tests(core_info: Dict[str, Any], test_duration_sec: int, benchmark_to_run: str):
     """
     Performs integer and/or float benchmarks on each logical core individually.
     'benchmark_to_run' can be "all", "integer", or "float".
@@ -334,6 +356,46 @@ def perform_individual_core_tests(core_info: dict[str, Any], test_duration_sec: 
     print("--- Individual Core Performance Tests Finished ---")
 
 
+def main_fixed():
+    """
+    Main function to orchestrate CPU benchmarks.
+    """
+    # For now, using fixed values. Will integrate argparse later.
+    # args = parse_arguments()
+    test_duration_per_core = 5 # Using a shorter duration for now, can be 60s as per plan
+
+    print("Starting CPU Benchmark Suite...\n")
+
+    core_info = get_core_info()
+    print("--- System Core Information ---")
+    if core_info:
+        print(f"  Logical cores detected: {core_info.get('logical_cores', 'N/A')}")
+        print(f"  Physical cores detected: {core_info.get('physical_cores', 'N/A')}")
+        print("  Note: P-Core/E-Core type detection is not implemented.")
+    else:
+        print("  Could not retrieve core information.")
+    print("-----------------------------\n")
+
+    logical_cores = core_info.get("logical_cores")
+    if isinstance(logical_cores, int) and logical_cores > 0:
+        perform_individual_core_tests(core_info, test_duration_per_core, "all")
+    else:
+        print("Skipping individual core tests as valid core information is unavailable.", file=sys.stderr)
+        print("Running benchmarks on unspecified core(s) as a fallback general test:")
+        # Fallback: Run benchmarks without setting affinity if core info is bad
+        fallback_duration = 2
+        print(f"  Running integer benchmark (fallback) for {fallback_duration}s...")
+        int_ops = run_integer_benchmark(fallback_duration)
+        int_ops_per_sec = int_ops / fallback_duration if fallback_duration > 0 else 0
+        print(f"  Integer Ops/sec (fallback): {int_ops_per_sec:,.2f}")
+
+        print(f"  Running float benchmark (fallback) for {fallback_duration}s...")
+        float_ops = run_float_benchmark(fallback_duration)
+        float_ops_per_sec = float_ops / fallback_duration if fallback_duration > 0 else 0
+        print(f"  Float Ops/sec (fallback): {float_ops_per_sec:,.2f}")
+
+
+    print("\nCPU Benchmark Suite Finished.")
 
 
 # --- Group Performance Tests ---
@@ -380,7 +442,7 @@ def perform_group_test(core_info: Dict[str, Any], test_duration_sec: int, use_lo
                 print(f"    CPU {res[0]}: Error - {res[3]}. Operations: {res[1]}")
             elif len(res) == 3: # Success case
                 ops_per_sec = res[1] / test_duration_sec if test_duration_sec > 0 else 0
-                #print(f"    CPU {res[0]}: {res[1]} ops ({ops_per_sec:,.2f} Ops/sec)")
+                print(f"    CPU {res[0]}: {res[1]} ops ({ops_per_sec:,.2f} Ops/sec)")
                 total_int_ops += res[1]
                 successful_int_threads +=1
             else: # Unknown error or format
@@ -418,7 +480,7 @@ def perform_group_test(core_info: Dict[str, Any], test_duration_sec: int, use_lo
                 print(f"    CPU {res[0]}: Error - {res[3]}. Operations: {res[1]}")
             elif len(res) == 3:
                 ops_per_sec = res[1] / test_duration_sec if test_duration_sec > 0 else 0
-                #print(f"    CPU {res[0]}: {res[1]} ops ({ops_per_sec:,.2f} Ops/sec)")
+                print(f"    CPU {res[0]}: {res[1]} ops ({ops_per_sec:,.2f} Ops/sec)")
                 total_float_ops += res[1]
                 successful_float_threads +=1
             else:
@@ -435,67 +497,6 @@ def perform_group_test(core_info: Dict[str, Any], test_duration_sec: int, use_lo
             print(f"  No successful float benchmark threads completed for {group_name}.")
 
     print(f"==== {group_name} Performance Test Finished ====")
-
-
-def benchmark_thread_target(cpu_index: int, benchmark_type: str, duration_sec: int, results_list: List[Tuple[Any, ...]]):
-    """
-    Target function for benchmark threads. Sets affinity and runs a benchmark.
-    """
-    if not set_current_thread_affinity(cpu_index):
-        print(f"Thread for CPU {cpu_index} ({benchmark_type}): Failed to set thread affinity. Test may not be accurate.", file=sys.stderr)
-        # Proceed with benchmark anyway, but it won't be pinned.
-        # Alternatively, one could append an error and return. For now, run it unpinned.
-        # results_list.append((cpu_index, 0, benchmark_type, "Affinity Error"))
-        # return
-
-    # Short delay to allow affinity to potentially take effect if there are OS scheduling latencies.
-    # This is speculative and might not be necessary or effective on all OSes.
-    time.sleep(0.01)
-
-
-    ops = 0
-    if benchmark_type == "integer":
-        ops = run_integer_benchmark(duration_sec)
-    elif benchmark_type == "float":
-        ops = run_float_benchmark(duration_sec)
-    else:
-        results_list.append((cpu_index, 0, benchmark_type, "Unknown Benchmark Type"))
-        return
-
-    results_list.append((cpu_index, ops, benchmark_type))
-
-
-from typing import Dict, Union
-
-def get_core_info() -> Dict[str, Union[int, str]]:
-    """
-    Retrieves information about CPU cores using psutil.
-    """
-    if not psutil:
-        print("Warning: psutil module not found. Core information will be limited.", file=sys.stderr)
-        # Fallback to os.cpu_count() if available, otherwise unknown
-        num_logical_cores = os.cpu_count() if hasattr(os, 'cpu_count') else "Unknown"
-        if num_logical_cores is None:
-            num_logical_cores = "Unknown"
-        return {
-            "logical_cores": num_logical_cores,
-            "physical_cores": "Unknown (psutil not available)"
-        }
-    num_logical_cores = psutil.cpu_count(logical=True)
-    num_physical_cores = psutil.cpu_count(logical=False)
-
-    if num_logical_cores is None:
-        num_logical_cores = "Unknown"
-    if num_physical_cores is None:
-        print("Warning: Could not determine the number of physical cores. Using logical core count as fallback for physical cores.", file=sys.stderr)
-        num_physical_cores = num_logical_cores
-        # Alternatively, could be set to "Unknown" or some other indicator.
-        # For now, assuming logical as a fallback is a common approach if detailed SMT info isn't critical.
-
-    return {
-        "logical_cores": num_logical_cores,
-        "physical_cores": num_physical_cores
-    }
 
 
 def parse_cpu_arguments(): # Definition of parse_cpu_arguments
@@ -578,7 +579,7 @@ def main():
     args = parse_cpu_arguments()
 
     print(f"Starting CPU Benchmark Suite with arguments: {vars(args)}\n") 
-    
+
     core_info = get_core_info()
     print("--- System Core Information ---")
     
@@ -596,7 +597,7 @@ def main():
 
     if core_tests_selected and not valid_logical_cores:
         print("Warning: Core-specific run modes selected, but valid logical core information is unavailable. Attempting fallback tests.", file=sys.stderr)
-    run_passmark_style_benchmark()
+
     if args.run_mode == "all" or args.run_mode == "individual":
         if valid_logical_cores:
             perform_individual_core_tests(core_info, args.duration_individual, args.test_type)
@@ -640,123 +641,6 @@ def main():
     if (args.run_mode == "all" or args.run_mode == "individual") and valid_logical_cores: tests_actually_run_count+=1
     if (args.run_mode == "all" or args.run_mode == "physical") and (valid_physical_cores or (valid_logical_cores and not valid_physical_cores)): tests_actually_run_count+=1 # counts physical or its logical fallback
     print("\nCPU Benchmark Suite Finished.")
-
-
-# Configuration for PassMark-like testing
-TEST_CONFIG = {
-    'iterations': 3,           # Number of test iterations (PassMark runs multiple iterations)
-    'warmup_time': 5,         # Seconds to warm up the CPU before testing
-    'test_duration': 30,      # Seconds per test (PassMark uses 30-second tests)
-    'cooldown_time': 2,       # Seconds to cool down between tests
-    'stabilization_time': 1,  # Seconds to wait for system to stabilize after affinity changes
-}
-
-def run_passmark_style_benchmark():
-    """
-    Runs CPU benchmarks following PassMark's methodology:
-    1. System warmup
-    2. Multiple iterations
-    3. Proper cool-down periods
-    4. Both single and multi-core tests
-    5. Averaged results
-    """
-    print("\n=== Starting PassMark-style CPU Benchmark ===\n")
-    
-    core_info = get_core_info()
-    print("System Information:")
-    print(f"  Logical cores: {core_info.get('logical_cores', 'Unknown')}")
-    print(f"  Physical cores: {core_info.get('physical_cores', 'Unknown')}")
-    
-    # Warm up the system
-    print(f"\nWarming up system for {TEST_CONFIG['warmup_time']} seconds...")
-    run_float_benchmark(TEST_CONFIG['warmup_time'])
-    
-    single_core_results = []
-    multi_core_results = []
-    
-    # Run multiple iterations
-    for i in range(TEST_CONFIG['iterations']):
-        print(f"\nIteration {i + 1}/{TEST_CONFIG['iterations']}")
-        
-        # Single-core tests
-        print("\nRunning single-core tests...")
-        int_score = run_integer_benchmark(TEST_CONFIG['test_duration'])
-        float_score = run_float_benchmark(TEST_CONFIG['test_duration'])
-        single_scores = {
-            'integer': get_normalized_scores(int_score, TEST_CONFIG['test_duration'], False, False),
-            'float': get_normalized_scores(float_score, TEST_CONFIG['test_duration'], False, True)
-        }
-        single_core_results.append(single_scores)
-        
-        print(f"  Integer Score: {single_scores['integer']['normalized_score']:,}")
-        print(f"  Float Score: {single_scores['float']['normalized_score']:,}")
-        
-        time.sleep(TEST_CONFIG['cooldown_time'])
-        
-        # Multi-core tests
-        print("\nRunning multi-core tests...")
-        num_cores = core_info.get('logical_cores', os.cpu_count() or 1)
-        
-        threads_int = []
-        threads_float = []
-        int_results = []
-        float_results = []
-        
-        for _ in range(num_cores):
-            threads_int.append(threading.Thread(
-                target=lambda: int_results.append(run_integer_benchmark(TEST_CONFIG['test_duration']))
-            ))
-            threads_float.append(threading.Thread(
-                target=lambda: float_results.append(run_float_benchmark(TEST_CONFIG['test_duration']))
-            ))
-        
-        for t in threads_int:
-            t.start()
-        for t in threads_int:
-            t.join()
-            
-        time.sleep(TEST_CONFIG['stabilization_time'])
-            
-        for t in threads_float:
-            t.start()
-        for t in threads_float:
-            t.join()
-        
-        multi_scores = {
-            'integer': get_normalized_scores(sum(int_results), TEST_CONFIG['test_duration'], True, False),
-            'float': get_normalized_scores(sum(float_results), TEST_CONFIG['test_duration'], True, True)
-        }
-        multi_core_results.append(multi_scores)
-        
-        print(f"  Integer Score: {multi_scores['integer']['normalized_score']:,}")
-        print(f"  Float Score: {multi_scores['float']['normalized_score']:,}")
-        
-        time.sleep(TEST_CONFIG['cooldown_time'])
-    
-    # Calculate and display final scores
-    print("\n=== Final Benchmark Results ===")
-    
-    def avg_score(results, test_type):
-        scores = [r[test_type]['normalized_score'] for r in results]
-        return sum(scores) / len(scores)
-    
-    print("\nSingle-Core Scores:")
-    print(f"  Integer: {avg_score(single_core_results, 'integer'):,.0f}")
-    print(f"  Float: {avg_score(single_core_results, 'float'):,.0f}")
-    
-    print("\nMulti-Core Scores:")
-    print(f"  Integer: {avg_score(multi_core_results, 'integer'):,.0f}")
-    print(f"  Float: {avg_score(multi_core_results, 'float'):,.0f}")
-    
-    # Calculate overall score (similar to PassMark's CPU Mark)
-    overall_score = (
-        avg_score(single_core_results, 'integer') * 0.1 +
-        avg_score(single_core_results, 'float') * 0.15 +
-        avg_score(multi_core_results, 'integer') * 0.3 +
-        avg_score(multi_core_results, 'float') * 0.45
-    )
-    
-    print(f"\nOverall CPU Score: {overall_score:,.0f}")
 
 
 if __name__ == "__main__":
