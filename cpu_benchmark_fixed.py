@@ -2,6 +2,10 @@ import time
 import math
 import os
 import sys
+import json
+from datetime import datetime
+import platform
+import html
 
 # Reference system baselines (based on a mid-range system as reference point)
 # These values are from an Intel Core i5-12600K system
@@ -642,13 +646,15 @@ def main():
     print("\nCPU Benchmark Suite Finished.")
 
 
+
+
 # Configuration for PassMark-like testing
 TEST_CONFIG = {
     'iterations': 3,           # Number of test iterations (PassMark runs multiple iterations)
-    'warmup_time': 5,         # Seconds to warm up the CPU before testing
-    'test_duration': 30,      # Seconds per test (PassMark uses 30-second tests)
+    'warmup_time': 8,         # Seconds to warm up the CPU before testing
+    'test_duration': 90,      # Seconds per test (PassMark uses 30-second tests)
     'cooldown_time': 2,       # Seconds to cool down between tests
-    'stabilization_time': 1,  # Seconds to wait for system to stabilize after affinity changes
+    'stabilization_time': 3,  # Seconds to wait for system to stabilize after affinity changes
 }
 
 def run_passmark_style_benchmark():
@@ -696,6 +702,9 @@ def run_passmark_style_benchmark():
         # Multi-core tests
         print("\nRunning multi-core tests...")
         num_cores = core_info.get('logical_cores', os.cpu_count() or 1)
+        # Ensure num_cores is an integer for range()
+        if not isinstance(num_cores, int) or num_cores <= 0:
+            num_cores = os.cpu_count() or 1
         
         threads_int = []
         threads_float = []
@@ -733,22 +742,24 @@ def run_passmark_style_benchmark():
         
         time.sleep(TEST_CONFIG['cooldown_time'])
     
-    # Calculate and display final scores
-    print("\n=== Final Benchmark Results ===")
+    # Calculate and display final scores    print("\n=== Generating Final Report ===")
     
+    # Generate HTML report
+    report_path = generate_html_report(single_core_results, multi_core_results, core_info, TEST_CONFIG)
+    print(f"\nDetailed HTML report has been generated: {report_path}")
+    
+    # Print summary to console
     def avg_score(results, test_type):
         scores = [r[test_type]['normalized_score'] for r in results]
         return sum(scores) / len(scores)
     
-    print("\nSingle-Core Scores:")
-    print(f"  Integer: {avg_score(single_core_results, 'integer'):,.0f}")
-    print(f"  Float: {avg_score(single_core_results, 'float'):,.0f}")
+    print("\nQuick Summary:")
+    print(f"  Single-Core Integer: {avg_score(single_core_results, 'integer'):,.0f}")
+    print(f"  Single-Core Float: {avg_score(single_core_results, 'float'):,.0f}")
+    print(f"  Multi-Core Integer: {avg_score(multi_core_results, 'integer'):,.0f}")
+    print(f"  Multi-Core Float: {avg_score(multi_core_results, 'float'):,.0f}")
     
-    print("\nMulti-Core Scores:")
-    print(f"  Integer: {avg_score(multi_core_results, 'integer'):,.0f}")
-    print(f"  Float: {avg_score(multi_core_results, 'float'):,.0f}")
-    
-    # Calculate overall score (similar to PassMark's CPU Mark)
+    # Calculate overall score
     overall_score = (
         avg_score(single_core_results, 'integer') * 0.1 +
         avg_score(single_core_results, 'float') * 0.15 +
@@ -757,7 +768,123 @@ def run_passmark_style_benchmark():
     )
     
     print(f"\nOverall CPU Score: {overall_score:,.0f}")
+    print(f"\nOpen {report_path} in your web browser for detailed results and charts.")
 
+def generate_html_report(single_core_results, multi_core_results, core_info, config):
+    """
+    Generates an HTML report from the benchmark results.
+    """
+    with open('benchmark_template.html', 'r') as f:
+        template = f.read()
+    
+    # Format system information
+    system_info = f"""
+    <table>
+        <tr><th>CPU</th><td>{platform.processor()}</td></tr>
+        <tr><th>Physical Cores</th><td>{core_info.get('physical_cores', 'Unknown')}</td></tr>
+        <tr><th>Logical Cores</th><td>{core_info.get('logical_cores', 'Unknown')}</td></tr>
+        <tr><th>Operating System</th><td>{platform.system()} {platform.release()}</td></tr>
+        <tr><th>Python Version</th><td>{platform.python_version()}</td></tr>
+    </table>
+    """
+
+    # Format benchmark configuration
+    benchmark_config = f"""
+    <table>
+        <tr><th>Test Duration</th><td>{config['test_duration']} seconds</td></tr>
+        <tr><th>Number of Iterations</th><td>{config['iterations']}</td></tr>
+        <tr><th>Warmup Time</th><td>{config['warmup_time']} seconds</td></tr>
+    </table>
+    """
+
+    # Format single-core results
+    def format_results_table(results, is_single_core=True):
+        rows = []
+        for i, result in enumerate(results):
+            int_score = result['integer']['normalized_score']
+            float_score = result['float']['normalized_score']
+            rows.append(f"""
+                <tr>
+                    <td>Iteration {i + 1}</td>
+                    <td>{result['integer']['ops_per_sec']:,.2f}</td>
+                    <td>{int_score:,}</td>
+                    <td>{result['float']['ops_per_sec']:,.2f}</td>
+                    <td>{float_score:,}</td>
+                </tr>
+            """)
+        
+        avg_int = sum(r['integer']['normalized_score'] for r in results) / len(results)
+        avg_float = sum(r['float']['normalized_score'] for r in results) / len(results)
+        
+        rows.append(f"""
+            <tr style="font-weight: bold;">
+                <td>Average</td>
+                <td>-</td>
+                <td>{avg_int:,.0f}</td>
+                <td>-</td>
+                <td>{avg_float:,.0f}</td>
+            </tr>
+        """)
+        
+        return f"""
+        <table>
+            <tr>
+                <th>Run</th>
+                <th>Integer Ops/sec</th>
+                <th>Integer Score</th>
+                <th>Float Ops/sec</th>
+                <th>Float Score</th>
+            </tr>
+            {"".join(rows)}
+        </table>
+        """
+
+    # Calculate overall score
+    def avg_score(results, test_type):
+        return sum(r[test_type]['normalized_score'] for r in results) / len(results)
+
+    overall_score = (
+        avg_score(single_core_results, 'integer') * 0.1 +
+        avg_score(single_core_results, 'float') * 0.15 +
+        avg_score(multi_core_results, 'integer') * 0.3 +
+        avg_score(multi_core_results, 'float') * 0.45
+    )
+
+    # Prepare chart data
+    chart_data = [
+        {
+            'x': ['Single-Core Integer', 'Single-Core Float', 'Multi-Core Integer', 'Multi-Core Float'],
+            'y': [
+                avg_score(single_core_results, 'integer'),
+                avg_score(single_core_results, 'float'),
+                avg_score(multi_core_results, 'integer'),
+                avg_score(multi_core_results, 'float')
+            ],
+            'type': 'bar',
+            'name': 'Normalized Scores'
+        }
+    ]
+
+    # Fill in template
+    report = template.format(
+        timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        system_info=system_info,
+        benchmark_config=benchmark_config,
+        single_core_results=format_results_table(single_core_results, True),
+        multi_core_results=format_results_table(multi_core_results, False),
+        per_core_results="",  # Add per-core results if needed
+        final_score=f"<h3>{overall_score:,.0f}</h3>",
+        test_info=f"{config['iterations']} iterations, {config['test_duration']}s per test",
+        chart_data=json.dumps(chart_data)
+    )
+
+    # Save report
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    report_path = f'cpu_benchmark_report_{timestamp}.html'
+    with open(report_path, 'w') as f:
+        f.write(report)
+    
+    return report_path
 
 if __name__ == "__main__":
     main()
