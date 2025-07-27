@@ -621,11 +621,16 @@ def main():
     
     print(f"  Logical cores detected: {core_info.get('logical_cores', 'N/A')}")
     print(f"  Physical cores detected: {core_info.get('physical_cores', 'N/A')}")
-
+    
     logical_cores_value = core_info.get("logical_cores", 0)
     valid_logical_cores = isinstance(logical_cores_value, int) and logical_cores_value > 0
     physical_cores_value = core_info.get("physical_cores", 0)
-    valid_physical_cores = isinstance(physical_cores_value, int) and physical_cores_value > 0    # Determine if any test mode involving cores is selected
+    valid_physical_cores = isinstance(physical_cores_value, int) and physical_cores_value > 0
+    
+    # Initialize control flags
+    physical_group_test_run_as_logical_fallback = False
+    
+    # Determine if any test mode involving cores is selected
     core_tests_selected = args.run_mode in ["all", "individual", "physical", "logical"]
     
     if core_tests_selected and not valid_logical_cores:
