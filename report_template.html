@@ -320,14 +320,16 @@
             
             // Save and trigger global range
             function updateGlobalRange() {
-                const fromIdx = dateFrom.selectedIndex;
-                const toIdx = dateTo.selectedIndex;
+                const fromTimestamp = dateFrom.value;
+                const toTimestamp = dateTo.value;
+                const fromIdx = sortedTimestamps.indexOf(fromTimestamp);
+                const toIdx = sortedTimestamps.indexOf(toTimestamp);
                 if (fromIdx > toIdx) {
                     alert('Start date must be before end date.');
                     return;
                 }
-                globalDateRange.from = sortedTimestamps[fromIdx];
-                globalDateRange.to = sortedTimestamps[toIdx];
+                globalDateRange.from = fromTimestamp;
+                globalDateRange.to = toTimestamp;
                 redrawAllGraphs();
             }
             section.appendChild(container);
