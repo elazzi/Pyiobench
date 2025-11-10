@@ -333,9 +333,11 @@
                 redrawAllGraphs();
             }
             section.appendChild(container);
-            // Set initial range
+            // Set initial range but don't apply filter yet
             updateToOptions();
-            updateGlobalRange();
+            // Set initial global date range without redrawing graphs
+            globalDateRange.from = sortedTimestamps[0];
+            globalDateRange.to = sortedTimestamps[sortedTimestamps.length - 1];
         }
 
         function initializeBulkMetricSelectors() {
