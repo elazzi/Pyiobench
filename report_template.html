@@ -673,10 +673,21 @@
                 const selectedMetric = metricSelect.value;
                 // Use global date range
                 const allTs = graphData[selectedDisks[0]][selectedMetric].series_data.timestamps;
-                let fromIdx = allTs.indexOf(globalDateRange.from);
-                let toIdx = allTs.indexOf(globalDateRange.to);
-                if (fromIdx === -1) fromIdx = 0;
-                if (toIdx === -1) toIdx = allTs.length - 1;
+                const fromDate = new Date(globalDateRange.from);
+                const toDate = new Date(globalDateRange.to);
+                const filteredIndices = [];
+                allTs.forEach((ts, idx) => {
+                    const tsDate = new Date(ts);
+                    if (tsDate >= fromDate && tsDate <= toDate) {
+                        filteredIndices.push(idx);
+                    }
+                });
+                if (filteredIndices.length === 0) {
+                    alert('No data in the selected date range.');
+                    return;
+                }
+                let fromIdx = filteredIndices[0];
+                let toIdx = filteredIndices[filteredIndices.length - 1];
                 if (selectedDisks.length < 2) {
                     alert('Select at least two disks.');
                     return;
@@ -691,7 +702,7 @@
                         return;
                     }
                 }
-                const timestamps = allTs.slice(fromIdx, toIdx + 1);
+                const timestamps = filteredIndices.map(idx => allTs[idx]);
                 const sumValues = timestamps.map((ts, idx) => {
                     let sum = 0;
                     selectedDisks.forEach(device => {
@@ -734,22 +745,29 @@
                 console.log('No global date range set, returning original data');
                 return seriesData;
             }
-            const fromIdx = seriesData.timestamps.indexOf(globalDateRange.from);
-            const toIdx = seriesData.timestamps.indexOf(globalDateRange.to);
+            const fromDate = new Date(globalDateRange.from);
+            const toDate = new Date(globalDateRange.to);
             console.log('Filtering series data:', {
                 from: globalDateRange.from,
                 to: globalDateRange.to,
-                fromIdx,
-                toIdx,
+                fromDate,
+                toDate,
                 totalTimestamps: seriesData.timestamps.length
             });
-            if (fromIdx === -1 || toIdx === -1 || fromIdx > toIdx) {
-                console.log('Invalid indices, returning original data');
+            const filteredIndices = [];
+            seriesData.timestamps.forEach((ts, idx) => {
+                const tsDate = new Date(ts);
+                if (tsDate >= fromDate && tsDate <= toDate) {
+                    filteredIndices.push(idx);
+                }
+            });
+            if (filteredIndices.length === 0) {
+                console.log('No timestamps in range, returning original data');
                 return seriesData;
             }
             const filteredData = {
-                timestamps: seriesData.timestamps.slice(fromIdx, toIdx + 1),
-                values: seriesData.values.slice(fromIdx, toIdx + 1)
+                timestamps: filteredIndices.map(idx => seriesData.timestamps[idx]),
+                values: filteredIndices.map(idx => seriesData.values[idx])
             };
             console.log('Filtered data length:', filteredData.timestamps.length);
             return filteredData;
