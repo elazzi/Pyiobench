@@ -324,20 +324,30 @@
                 const toTimestamp = dateTo.value;
                 const fromIdx = sortedTimestamps.indexOf(fromTimestamp);
                 const toIdx = sortedTimestamps.indexOf(toTimestamp);
+                console.log('Applying filter:', { fromTimestamp, toTimestamp, fromIdx, toIdx });
                 if (fromIdx > toIdx) {
                     alert('Start date must be before end date.');
                     return;
                 }
                 globalDateRange.from = fromTimestamp;
                 globalDateRange.to = toTimestamp;
+                console.log('Global date range set:', globalDateRange);
                 redrawAllGraphs();
             }
             section.appendChild(container);
             // Set initial range but don't apply filter yet
             updateToOptions();
+            // Set initial selections in dropdowns
+            if (dateFrom.options.length > 0) {
+                dateFrom.selectedIndex = 0;
+            }
+            if (dateTo.options.length > 0) {
+                dateTo.selectedIndex = dateTo.options.length - 1;
+            }
             // Set initial global date range without redrawing graphs
             globalDateRange.from = sortedTimestamps[0];
             globalDateRange.to = sortedTimestamps[sortedTimestamps.length - 1];
+            console.log('Initial global date range:', globalDateRange);
         }
 
         function initializeBulkMetricSelectors() {
@@ -720,14 +730,29 @@
         }
 
         function filterSeriesByGlobalDate(seriesData) {
-            if (!globalDateRange.from || !globalDateRange.to) return seriesData;
+            if (!globalDateRange.from || !globalDateRange.to) {
+                console.log('No global date range set, returning original data');
+                return seriesData;
+            }
             const fromIdx = seriesData.timestamps.indexOf(globalDateRange.from);
             const toIdx = seriesData.timestamps.indexOf(globalDateRange.to);
-            if (fromIdx === -1 || toIdx === -1 || fromIdx > toIdx) return seriesData;
-            return {
+            console.log('Filtering series data:', {
+                from: globalDateRange.from,
+                to: globalDateRange.to,
+                fromIdx,
+                toIdx,
+                totalTimestamps: seriesData.timestamps.length
+            });
+            if (fromIdx === -1 || toIdx === -1 || fromIdx > toIdx) {
+                console.log('Invalid indices, returning original data');
+                return seriesData;
+            }
+            const filteredData = {
                 timestamps: seriesData.timestamps.slice(fromIdx, toIdx + 1),
                 values: seriesData.values.slice(fromIdx, toIdx + 1)
             };
+            console.log('Filtered data length:', filteredData.timestamps.length);
+            return filteredData;
         }
 
         function redrawAllGraphs() {
